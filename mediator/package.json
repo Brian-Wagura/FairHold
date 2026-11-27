@@ -1,15 +1,16 @@
 {
-  "name": "mediator",
+  "name": "fairhold-mediator",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "FairHold AI mediator: reviews hash-verified evidence and submits one bounded proposal per dispute via a scoped session key.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^1.14.0",
     "dotenv": "^18.0.10",

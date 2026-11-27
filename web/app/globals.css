@@ -1,26 +1,209 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+ * FairHold styling per STYLES.md: a monochrome gray-scale UI with few borders and full
+ * light/dark support. There is no brand hue. "Primary" is near-black in light mode and
+ * near-white in dark mode. Hue appears only for status (success, warning, error, info).
+ *
+ * The project runs Tailwind v4, so STYLES.md's v3 config is expressed here with @theme:
+ *  - the gray scale is pinned to Tailwind v3 hex values (STYLES.md §4)
+ *  - shadcn "neutral" semantic tokens drive the primitives (§3)
+ *  - dark mode uses the `.dark` class on <html> (§11)
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Tailwind v3 gray (STYLES.md hex reference) */
+  --color-gray-50: #f9fafb;
+  --color-gray-100: #f3f4f6;
+  --color-gray-200: #e5e7eb;
+  --color-gray-300: #d1d5db;
+  --color-gray-400: #9ca3af;
+  --color-gray-500: #6b7280;
+  --color-gray-600: #4b5563;
+  --color-gray-700: #374151;
+  --color-gray-800: #1f2937;
+  --color-gray-900: #111827;
+  --color-gray-950: #030712;
+
+  /* Shared page width: navbar, content and footer line up. */
+  --container-page: 90rem;
 }
 
 @theme inline {
+  --font-sans: var(--font-raleway), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Status text colours (the only hues) */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  /* Mediator/AI accents are monochrome by design. */
+  --color-ai: var(--ai);
 }
 
-@media (prefers-color-scheme: dark) {
+@layer base {
+  /* App-shell mapping of STYLES.md §4: page gray-50/gray-900, surfaces white/gray-800. */
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --radius: 0.5rem;
+
+    --background: var(--color-gray-50);
+    --foreground: var(--color-gray-900);
+    --card: #ffffff;
+    --card-foreground: var(--color-gray-900);
+    --popover: #ffffff;
+    --popover-foreground: var(--color-gray-900);
+    --primary: var(--color-gray-900);
+    --primary-foreground: #ffffff;
+    --secondary: var(--color-gray-100);
+    --secondary-foreground: var(--color-gray-900);
+    --muted: var(--color-gray-100);
+    --muted-foreground: var(--color-gray-500);
+    --accent: var(--color-gray-100);
+    --accent-foreground: var(--color-gray-900);
+    --destructive: var(--color-red-600);
+    --destructive-foreground: #ffffff;
+    --border: var(--color-gray-200);
+    --input: var(--color-gray-300);
+    --ring: var(--color-gray-900);
+
+    --success: var(--color-green-600);
+    --warning: var(--color-amber-600);
+    --info: var(--color-blue-600);
+    --ai: var(--color-gray-700);
+
+    color-scheme: light;
+  }
+
+  .dark {
+    --background: var(--color-gray-900);
+    --foreground: #ffffff;
+    --card: var(--color-gray-800);
+    --card-foreground: #ffffff;
+    --popover: var(--color-gray-800);
+    --popover-foreground: #ffffff;
+    --primary: var(--color-gray-100);
+    --primary-foreground: var(--color-gray-900);
+    --secondary: var(--color-gray-700);
+    --secondary-foreground: #ffffff;
+    --muted: var(--color-gray-700);
+    --muted-foreground: var(--color-gray-400);
+    --accent: var(--color-gray-700);
+    --accent-foreground: #ffffff;
+    --destructive: var(--color-red-600);
+    --destructive-foreground: #ffffff;
+    --border: var(--color-gray-700);
+    --input: var(--color-gray-600);
+    --ring: var(--color-gray-100);
+
+    --success: var(--color-green-400);
+    --warning: var(--color-amber-400);
+    --info: var(--color-blue-400);
+    --ai: var(--color-gray-300);
+
+    color-scheme: dark;
+  }
+
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Visible focus for primitives: ring-2 ring-ring ring-offset-2 (STYLES.md §12). */
+  :where(a, button, summary, [tabindex]):focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px var(--color-background),
+      0 0 0 4px var(--color-ring);
+    border-radius: var(--radius-lg);
+  }
+
+  ::selection {
+    background: var(--color-gray-900);
+    color: #ffffff;
+  }
+  .dark ::selection {
+    background: var(--color-gray-100);
+    color: var(--color-gray-900);
+  }
+
+  input[type="range"],
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--color-primary);
+  }
+
+  dialog::backdrop {
+    background: rgb(0 0 0 / 0.5);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Subtle fade for modals (STYLES.md §10: opacity, ~200ms). */
+@keyframes fh-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+dialog[open] {
+  animation: fh-fade-in 200ms ease-out;
+}
+
+/* Theme switching must not animate colours (next-themes' disableTransitionOnChange). */
+.theme-switching,
+.theme-switching * {
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

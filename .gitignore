@@ -6,3 +6,7 @@ contracts/out/
 contracts/cache/
 .next/
 evidence-data/
+*.tsbuildinfo
+next-env.d.ts
+contracts/broadcast/*/31337/
+contracts/broadcast/**/dry-run/

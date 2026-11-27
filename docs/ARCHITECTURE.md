@@ -10,11 +10,11 @@ The smart contract is the source of truth for escrow state and funds. The
 mediator service can recommend a split, but it cannot transfer funds or
 override the parties' accept/reject decisions.
 
-> **Implementation status:** this repository currently contains the package
-> structure and a new, unimplemented `MediatedEscrow` contract. The mediator
-> service and web application are also still scaffolding. This document defines
-> the intended architecture and behavior; implementation-specific details
-> should be updated when contracts, APIs, or integrations change.
+> **Implementation status:** implemented. `contracts/src/MediatedEscrow.sol`
+> (with `MediatorRegistry.sol`), the mediator service in `mediator/`, and the
+> web app in `web/` follow this document. Implementation decisions that the
+> original design left open are recorded in
+> [Implementation Decisions](#implementation-decisions) at the end.
 
 ## System Overview
 
@@ -349,3 +349,32 @@ Integration tests should verify:
 - proposal signing and submission;
 - RPC and wallet error handling; and
 - no single off-chain component is required for deadline finalization.
+
+## Implementation Decisions
+
+These choices were left open above and are now fixed by the code.
+
+| Topic | Decision |
+| --- | --- |
+| Asset | One ERC-20 per deployment (tUSD8 on Aevum, 6 decimals). Fee-on-transfer tokens are rejected at funding by a balance-delta check. No native-coin escrows. |
+| Payer acceptance | Creating and funding the escrow is the payer's acceptance. `createEscrowWithPermit` does it in one transaction with an EIP-2612 signature. |
+| Payee acceptance | `acceptTerms(id, digest)` must quote `termsDigest(id)`, a hash of every immutable term bound to chain id, contract and escrow id. |
+| Deadlines | Stored as durations at creation and turned into absolute timestamps when each phase starts: `activeDeadline` at acceptance, `evidenceDeadline` and `proposeDeadline` at dispute, `responseDeadline` at proposal. Every window is between 1 minute and 365 days. |
+| Expired acceptance | After `acceptBy`, anyone may call `finalize` to refund the payer (`Resolution.Expired`). Before acceptance the payer can `cancel` at any time. |
+| Mutual offers | Available in `Active`, `Disputed` and `Proposed`. Offers are reset on every state transition, so a stale pre-dispute offer can never match. A party can also `withdrawOffer`. |
+| Evidence | Allowed while `Active` and during the dispute evidence window. At most 64 items per escrow. The contract stores only `(hash, submitter, timestamp)`. The URI is emitted in an event and never stored. |
+| Proposal bounds | A `payeeAmount` above the escrow amount **reverts** (it is not capped). A zero `reasoningHash` reverts. |
+| Rejection | Any rejection settles the dispute fallback split immediately. Silence until `responseDeadline` executes the proposal (`ProposalUnchallenged`). |
+| Mediator identity | `MediatorRegistry` follows the ERC-8004 pattern: registered identity plus metadata URI, and reputation counters (`proposals`, `accepted`, `unchallenged`, `rejected`, `missed`) written only by the escrow's own state transitions. |
+| Mediator key | The owner key stays cold. The AI service signs with a **session key** that can only call `propose`, expires (at most 30 days), has a proposal budget, and can be revoked instantly. A paused mediator cannot be chosen for new escrows and cannot propose. |
+| Transfers | Push transfers via SafeERC20 after all state is written (checks-effects-interactions) plus `nonReentrant`. A failing transfer reverts the whole settlement. |
+| Evidence store | The mediator service keeps evidence content-addressed by keccak256 and re-hashes it on every read. Uploads and reads are authenticated with wallet signatures (EIP-191, ERC-1271 compatible) from the escrow's payer or payee. |
+| Reasoning commitment | `reasoningHash = keccak256(canonical JSON of the decision document)`. Anyone can fetch it from `GET /reasoning/:hash` and recompute the hash. |
+
+Solidity enums mirrored off-chain:
+
+```text
+Status:     None, AwaitingPayee, Active, Disputed, Proposed, Settled, Cancelled
+Resolution: None, Mutual, ProposalAccepted, ProposalUnchallenged, ProposalRejected,
+            MediatorTimeout, Undisputed, Cancelled, Expired
+```
