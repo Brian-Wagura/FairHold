@@ -119,7 +119,11 @@ export function ThemeToggle({ className }: { className?: string }) {
             aria-pressed={theme === o.value}
             onClick={() => {
               setTheme(o.value);
-              if (ref.current) ref.current.open = false;
+              // Close the menu and return focus to its trigger, as the Escape handler does.
+              if (ref.current) {
+                ref.current.open = false;
+                ref.current.querySelector("summary")?.focus();
+              }
             }}
             className={cx(
               "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors",

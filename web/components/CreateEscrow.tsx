@@ -9,7 +9,7 @@ import { explainError, fmtAmount, fmtDuration, parseAmount, pct, short } from "@
 import { uploadEvidence } from "@/lib/mediator-api";
 import { IconCheck, IconLock, IconShield } from "./icons";
 import { useTx, type TxOutcome } from "./tx";
-import { Badge, Button, Card, Field, Notice, PageHeader, ProgressSteps, Skeleton, SplitBar, TxLink, cx, inputCls, type StepState } from "./ui";
+import { Badge, Button, Card, Field, Notice, PageHeader, ProgressSteps, Skeleton, SplitBar, TxLink, cx, goToSection, inputCls, type StepState } from "./ui";
 import { useWallet } from "./wallet";
 
 const UNITS = { minutes: 60, hours: 3600, days: 86400 } as const;
@@ -587,14 +587,14 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
           <Card id="new-deadlines" title={<SectionTitle n={4}>Deadlines and fallbacks</SectionTitle>} description="These rules decide the outcome if someone stops responding, so nobody can hold the money hostage.">
             <div>
               <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Timeline</h3>
-              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Each step starts when the one before it ends.</p>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Each window is started by an event, shown under its name.</p>
               <ol className="mt-4 divide-y divide-gray-100 rounded-xl border border-gray-100 dark:divide-gray-700 dark:border-gray-700">
-                <TimelineRow n={1} label="Payee accepts within" hint="Otherwise you can take a full refund." value={win.acceptWithin} onChange={(v) => setWin({ ...win, acceptWithin: v })} error={show("acceptWithin")} onBlur={() => touch("acceptWithin")} />
-                <TimelineRow n={2} label="Dispute period" hint="After acceptance, either side can open a dispute until this ends." value={win.active} onChange={(v) => setWin({ ...win, active: v })} error={show("active")} onBlur={() => touch("active")} />
-                <li className="bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-gray-900/40 dark:text-gray-400">Only if someone disputes</li>
-                <TimelineRow n={3} label="Evidence window" hint="Both sides add evidence." value={win.evidence} onChange={(v) => setWin({ ...win, evidence: v })} error={show("evidence")} onBlur={() => touch("evidence")} />
-                <TimelineRow n={4} label="Mediator decides within" hint="If it misses this, the fallback split applies." value={win.propose} onChange={(v) => setWin({ ...win, propose: v })} error={show("propose")} onBlur={() => touch("propose")} />
-                <TimelineRow n={5} label="Time to respond" hint="If nobody rejects the proposal, it executes." value={win.response} onChange={(v) => setWin({ ...win, response: v })} error={show("response")} onBlur={() => touch("response")} />
+                <TimelineRow n={1} label="Payee accepts within" hint="Starts when you create the escrow. If the payee doesn't accept in time, you can take a full refund." value={win.acceptWithin} onChange={(v) => setWin({ ...win, acceptWithin: v })} error={show("acceptWithin")} onBlur={() => touch("acceptWithin")} />
+                <TimelineRow n={2} label="Dispute period" hint="Starts when the payee accepts. Until it ends, either side can open a dispute; if nobody does, the undisputed split pays out." value={win.active} onChange={(v) => setWin({ ...win, active: v })} error={show("active")} onBlur={() => touch("active")} />
+                <li className="bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-gray-900/40 dark:text-gray-400">Only if a dispute is opened during the dispute period</li>
+                <TimelineRow n={3} label="Evidence window" hint="Starts when a dispute is opened. Both sides add evidence." value={win.evidence} onChange={(v) => setWin({ ...win, evidence: v })} error={show("evidence")} onBlur={() => touch("evidence")} />
+                <TimelineRow n={4} label="Mediator decides within" hint="Starts when the evidence window ends. If the mediator misses it, the fallback split applies." value={win.propose} onChange={(v) => setWin({ ...win, propose: v })} error={show("propose")} onBlur={() => touch("propose")} />
+                <TimelineRow n={5} label="Time to respond" hint="Starts when the mediator proposes. If nobody rejects in time, the proposal executes." value={win.response} onChange={(v) => setWin({ ...win, response: v })} error={show("response")} onBlur={() => touch("response")} />
               </ol>
             </div>
             <div className="mt-8">
@@ -623,8 +623,8 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
 
             <ol className="mt-5 space-y-3 border-l-2 border-gray-100 dark:border-gray-700 pl-4 text-sm" aria-label="Timeline">
               <TimelineItem title="Payee accepts" detail={`within ${fmtDuration(secs(win.acceptWithin))}`} />
-              <TimelineItem title="Work and dispute period" detail={fmtDuration(secs(win.active))} />
-              <TimelineItem title="If disputed" detail={`${fmtDuration(secs(win.evidence))} evidence → ${fmtDuration(secs(win.propose))} mediator → ${fmtDuration(secs(win.response))} to respond`} />
+              <TimelineItem title="Dispute period" detail={`${fmtDuration(secs(win.active))} from acceptance`} />
+              <TimelineItem title="If a dispute is opened" detail={`${fmtDuration(secs(win.evidence))} evidence from opening → ${fmtDuration(secs(win.propose))} for the mediator after evidence closes → ${fmtDuration(secs(win.response))} to respond from the proposal`} />
             </ol>
 
             <div className="mt-5 space-y-4 text-sm">
@@ -645,7 +645,7 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
               <ul className="mt-2 space-y-1">
                 {checklist.map((c) => (
                   <li key={c.label}>
-                    <a href={`#${c.href}`} onClick={(ev) => { ev.preventDefault(); document.getElementById(c.href)?.scrollIntoView({ behavior: "smooth", block: "start" }); }} className="-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40">
+                    <a href={`#${c.href}`} onClick={(ev) => { ev.preventDefault(); goToSection(c.href); }} className="-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40">
                       <span
                         className={cx(
                           "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
@@ -719,7 +719,7 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
               {amountUnits > 0n ? fmtAmount(amountUnits) : "0.00"} <span className="text-xs font-medium text-gray-500 dark:text-gray-400">tUSD8</span>
             </p>
           </div>
-          <Button onClick={() => document.getElementById("new-review")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Review &amp; lock</Button>
+          <Button onClick={() => goToSection("new-review")}>Review &amp; lock</Button>
         </div>
       </div>
     </div>

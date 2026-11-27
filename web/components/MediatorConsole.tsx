@@ -86,7 +86,9 @@ export function MediatorConsole() {
   const { address, wallet, connect, connecting } = useWallet();
   const { run } = useTx();
   const confirm = useConfirm();
-  const [m, setM] = useState<Mediator>();
+  const [mRaw, setM] = useState<Mediator>();
+  // Chain time offset (chain - local ms); undefined until fetched, so no estimate uses local time.
+  const [chainOffset, setChainOffset] = useState<number>();
   const [loadedFor, setLoadedFor] = useState<string>();
   const [health, setHealth] = useState<Health>();
   const [jobs, setJobs] = useState<MediatorJob[]>([]);
@@ -100,6 +102,7 @@ export function MediatorConsole() {
   const [keyTouched, setKeyTouched] = useState(false);
 
   const load = useCallback(async () => {
+    chainTimeOffsetMs().then(setChainOffset).catch(() => undefined);
     if (address) {
       setM(await readMediator(address).catch(() => undefined));
       setLoadedFor(address);
@@ -116,7 +119,7 @@ export function MediatorConsole() {
   }, [address]);
 
   usePoll(load, 10_000);
-  const now = useChainNow(0);
+  const now = useChainNow(chainOffset ?? 0);
 
   async function act(label: string, functionName: string, args: unknown[]) {
     if (!wallet || !address) return;
@@ -133,12 +136,15 @@ export function MediatorConsole() {
     }
   }
 
-  const clockReady = now > 0; // chain-time clock ticks once after mount
+  // Use the mediator record only when it belongs to the connected wallet (never a stale one).
+  const loadingIdentity = Boolean(address && loadedFor !== address);
+  const m = address && !loadingIdentity ? mRaw : undefined;
+  // Time-based text needs chain time, not just a ticking local clock.
+  const clockReady = chainOffset !== undefined && now > 0;
   const sessionLive = Boolean(clockReady && m && m.sessionKey !== ZERO && Number(m.sessionExpiry) > now && m.sessionBudget > 0);
   const keyExpiresSoon = Boolean(sessionLive && m && (Number(m.sessionExpiry) - now < 86_400 || m.sessionBudget <= 2));
   const decided = m ? m.accepted + m.unchallenged + m.rejected : 0;
   const upheld = m && decided > 0 ? Math.round(((m.accepted + m.unchallenged) / decided) * 100) : undefined;
-  const loadingIdentity = address && loadedFor !== address;
   const keyError = !isAddress(key) ? (key ? "That isn't a valid address." : "Enter the session key address.") : address && key.toLowerCase() === address.toLowerCase() ? "Use a separate key, not this owner wallet." : undefined;
   const daysError = !Number.isInteger(days) || days < 1 || days > 30 ? "Choose 1 to 30 days." : undefined;
   const budgetError = !Number.isInteger(budget) || budget < 1 ? "At least 1 proposal." : undefined;
@@ -157,19 +163,23 @@ export function MediatorConsole() {
           href="med-identity"
           title="Register identity"
           status={m?.registered ? (m.active ? "done" : "problem") : "todo"}
-          detail={!address ? "Connect the owner wallet" : !m?.registered ? "Make this wallet selectable by payers" : m.active ? "Accepting new escrows" : "Paused: no new escrows or proposals"}
+          detail={!address ? "Connect the owner wallet" : loadingIdentity ? "Checking…" : !m?.registered ? "Make this wallet selectable by payers" : m.active ? "Accepting new escrows" : "Paused: no new escrows or proposals"}
         />
         <SetupStep
           n={2}
           href="med-key"
           title="Grant a session key"
-          status={sessionLive ? (keyExpiresSoon ? "problem" : "done") : m?.registered && m.sessionKey !== ZERO ? "problem" : "todo"}
+          status={sessionLive ? (keyExpiresSoon ? "problem" : "done") : clockReady && m?.registered && m.sessionKey !== ZERO ? "problem" : "todo"}
           detail={
-            sessionLive
-              ? `${m!.sessionBudget} proposals left · expires in ${fmtDuration(Number(m!.sessionExpiry) - now)}`
-              : m?.registered && m.sessionKey !== ZERO
-                ? "Expired, revoked or out of budget"
-                : "Propose-only, expiring, budgeted"
+            !address
+              ? "Connect the owner wallet"
+              : loadingIdentity || (m?.registered && !clockReady)
+                ? "Checking…"
+                : sessionLive
+                  ? `${m!.sessionBudget} proposals left · expires in ${fmtDuration(Number(m!.sessionExpiry) - now)}`
+                  : m?.registered && m.sessionKey !== ZERO
+                    ? "Expired, revoked or out of budget"
+                    : "Propose-only, expiring, budgeted"
           }
         />
         <SetupStep
@@ -242,7 +252,9 @@ export function MediatorConsole() {
         <Card id="med-key" title={<span className="flex items-center gap-2"><IconKey className="text-gray-500 dark:text-gray-400" /> AI session key</span>} description="A limited key for the AI service. It can never move funds.">
           {m?.registered ? (
             <div className="space-y-5 text-sm">
-              {sessionLive ? (
+              {!clockReady ? (
+                <div className="space-y-2" aria-busy="true" aria-label="Checking session key"><Skeleton className="h-12" /></div>
+              ) : sessionLive ? (
                 <Notice tone={keyExpiresSoon ? "warn" : "success"} title={`Active key ${short(m.sessionKey)}`}>
                   {m.sessionBudget} proposal{m.sessionBudget === 1 ? "" : "s"} left · expires in {fmtDuration(Number(m.sessionExpiry) - now)} ({fmtDate(m.sessionExpiry)})
                   {keyExpiresSoon && <span className="mt-1 block">Renew soon so open disputes aren&apos;t left without a mediator.</span>}
@@ -303,8 +315,10 @@ export function MediatorConsole() {
                 )}
               </div>
             </div>
+          ) : loadingIdentity ? (
+            <div className="space-y-3" aria-busy="true"><Skeleton className="h-12" /><Skeleton className="h-24" /></div>
           ) : (
-            <EmptyState icon={<IconKey size={20} />} title="Register first" body="Session keys belong to a registered mediator identity." />
+            <EmptyState icon={<IconKey size={20} />} title={address ? "Register first" : "Connect the owner wallet"} body="Session keys belong to a registered mediator identity." />
           )}
         </Card>
       </div>
