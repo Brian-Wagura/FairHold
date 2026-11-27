@@ -462,13 +462,41 @@ contract MediatedEscrowTest is Test {
         vm.prank(stranger);
         escrow.submitEvidence(id, keccak256("x"), "");
 
-        for (uint256 i = 0; i < escrow.MAX_EVIDENCE(); i++) {
+        uint256 perParty = escrow.MAX_EVIDENCE_PER_PARTY();
+        for (uint256 i = 0; i < perParty; i++) {
             vm.prank(payer);
-            escrow.submitEvidence(id, keccak256(abi.encode(i)), "");
+            escrow.submitEvidence(id, keccak256(abi.encode("payer", i)), "");
         }
+        // The payer has used its share and is capped...
+        vm.expectRevert(MediatedEscrow.EvidenceLimitReached.selector);
+        vm.prank(payer);
+        escrow.submitEvidence(id, keccak256("payer overflow"), "");
+
+        // ...but the payee's reserved share is untouched.
+        for (uint256 i = 0; i < perParty; i++) {
+            vm.prank(payee);
+            escrow.submitEvidence(id, keccak256(abi.encode("payee", i)), "");
+        }
+        assertEq(escrow.getEvidence(id).length, escrow.MAX_EVIDENCE());
         vm.expectRevert(MediatedEscrow.EvidenceLimitReached.selector);
         vm.prank(payee);
         escrow.submitEvidence(id, keccak256("overflow"), "");
+    }
+
+    function test_evidence_partyCannotExhaustOtherPartysShareBeforeDispute() public {
+        uint256 id = _active();
+        // Payer floods evidence while Active, before any dispute exists.
+        for (uint256 i = 0; i < escrow.MAX_EVIDENCE_PER_PARTY(); i++) {
+            vm.prank(payer);
+            escrow.submitEvidence(id, keccak256(abi.encode(i)), "");
+        }
+        vm.prank(payer);
+        escrow.openDispute(id);
+        // The payee can still respond within the evidence window.
+        vm.prank(payee);
+        escrow.submitEvidence(id, keccak256("payee rebuttal"), "");
+        MediatedEscrow.Evidence[] memory ev = escrow.getEvidence(id);
+        assertEq(ev[ev.length - 1].submitter, payee);
     }
 
     function test_evidence_notAllowedBeforeAcceptance() public {

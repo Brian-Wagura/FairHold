@@ -26,6 +26,9 @@ contract MediatedEscrow is MediatorRegistry, ReentrancyGuard {
     uint64 public constant MIN_WINDOW = 1 minutes;
     uint64 public constant MAX_WINDOW = 365 days;
     uint256 public constant MAX_EVIDENCE = 64;
+    /// @notice Each party is guaranteed half of the evidence capacity, so one side cannot
+    ///         exhaust the list (e.g. while Active) and lock the other out of the dispute.
+    uint256 public constant MAX_EVIDENCE_PER_PARTY = 32;
 
     // ---------------------------------------------------------------------
     // Types
@@ -122,6 +125,7 @@ contract MediatedEscrow is MediatorRegistry, ReentrancyGuard {
     uint256 public escrowCount;
     mapping(uint256 => Escrow) internal _escrows;
     mapping(uint256 => Evidence[]) internal _evidence;
+    mapping(uint256 => mapping(address => uint256)) internal _evidenceCountBy;
     mapping(address => uint256[]) internal _escrowsByAccount;
 
     // ---------------------------------------------------------------------
@@ -362,6 +366,9 @@ contract MediatedEscrow is MediatorRegistry, ReentrancyGuard {
         }
         Evidence[] storage list = _evidence[id];
         if (list.length >= MAX_EVIDENCE) revert EvidenceLimitReached();
+        uint256 mine = _evidenceCountBy[id][msg.sender];
+        if (mine >= MAX_EVIDENCE_PER_PARTY) revert EvidenceLimitReached();
+        _evidenceCountBy[id][msg.sender] = mine + 1;
         list.push(Evidence({contentHash: contentHash, submitter: msg.sender, submittedAt: _now()}));
         emit EvidenceSubmitted(id, msg.sender, list.length - 1, contentHash, uri);
     }

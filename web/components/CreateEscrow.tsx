@@ -1,15 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { formatUnits, isAddress, keccak256, parseEventLogs, toBytes, type Address, type Hex } from "viem";
+import { formatUnits, isAddress, keccak256, parseEventLogs, toBytes, type Address, type Hash, type Hex, type TransactionReceipt } from "viem";
 import { mediatedEscrowAbi } from "@/lib/abi";
-import { chainTimeOffsetMs, escrowContract, publicClient, tokenContract } from "@/lib/chain";
+import { chainTimeOffsetMs, checkTx, escrowContract, publicClient, tokenContract } from "@/lib/chain";
 import { config } from "@/lib/config";
 import { explainError, fmtAmount, fmtDuration, parseAmount, pct, short } from "@/lib/format";
 import { uploadEvidence } from "@/lib/mediator-api";
 import { IconLock, IconShield } from "./icons";
-import { useTx } from "./tx";
-import { Badge, Button, Card, Field, Notice, PageHeader, ProgressSteps, Skeleton, SplitBar, cx, inputCls, type StepState } from "./ui";
+import { useTx, type TxOutcome } from "./tx";
+import { Badge, Button, Card, Field, Notice, PageHeader, ProgressSteps, Skeleton, SplitBar, TxLink, cx, inputCls, type StepState } from "./ui";
 import { useWallet } from "./wallet";
 
 const UNITS = { minutes: 60, hours: 3600, days: 86400 } as const;
@@ -82,13 +82,46 @@ interface MediatorOption {
   missed: number;
 }
 
+const MEDIATOR_PAGE = 20;
+const pendingKey = (account: string) => `fairhold:pending-create:${account.toLowerCase()}`;
+
+function readPendingCreate(account?: string): Hash | undefined {
+  if (!account || typeof window === "undefined") return undefined;
+  try {
+    const v = localStorage.getItem(pendingKey(account));
+    return v && /^0x[0-9a-fA-F]{64}$/.test(v) ? (v as Hash) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writePendingCreate(account: string, hash?: Hash) {
+  try {
+    if (hash) localStorage.setItem(pendingKey(account), hash);
+    else localStorage.removeItem(pendingKey(account));
+  } catch {
+    /* storage blocked: the in-memory guard still applies */
+  }
+}
+
+function downloadText(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 type WinKey = "acceptWithin" | "active" | "evidence" | "propose" | "response";
 type Progress = { permit: StepState; approve: StepState; create: StepState; share: StepState };
 const IDLE: Progress = { permit: "todo", approve: "skipped", create: "todo", share: "todo" };
 
 export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void }) {
   const { address, wallet, tokenBalance, gasBalance, refreshBalances } = useWallet();
-  const { run } = useTx();
+  const { run, track } = useTx();
   const [preset, setPreset] = useState(0);
   const p = PRESETS[preset]!;
   const [payee, setPayee] = useState("");
@@ -98,7 +131,17 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
   const [undisputedBps, setUndisputed] = useState(p.undisputedBps);
   const [fallbackBps, setFallback] = useState(p.fallbackBps);
   const [mediators, setMediators] = useState<MediatorOption[]>();
+  const [mediatorTotal, setMediatorTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [manualMediator, setManualMediator] = useState(false);
+  const [manualStatus, setManualStatus] = useState<{ address: string; error?: string; checking?: boolean }>();
   const [mediator, setMediator] = useState<string>(config.defaultMediator);
+  // A submitted creation whose receipt we couldn't confirm. Persisted so a reload can't double-fund.
+  const [unresolved, setUnresolved] = useState<Hash | undefined>(() => readPendingCreate(address));
+  const [checking, setChecking] = useState(false);
+  const [checkNote, setCheckNote] = useState<string>();
+  // Funded escrow whose agreement text didn't reach the mediator yet.
+  const [shareRecovery, setShareRecovery] = useState<{ id: bigint; text: string; error: string }>();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<Progress>(IDLE);
   const [error, setError] = useState<string>();
@@ -116,17 +159,22 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
     setFallback(n.fallbackBps);
   }
 
+  async function fetchMediators(from: number, to: number): Promise<MediatorOption[]> {
+    const list: MediatorOption[] = [];
+    for (let i = from; i < to; i++) {
+      const a = await publicClient.readContract({ ...escrowContract, functionName: "mediatorAt", args: [BigInt(i)] });
+      const m = await publicClient.readContract({ ...escrowContract, functionName: "getMediator", args: [a] });
+      list.push({ address: a, uri: m.metadataURI, active: m.active, proposals: m.proposals, accepted: m.accepted, unchallenged: m.unchallenged, rejected: m.rejected, missed: m.missed });
+    }
+    return list;
+  }
+
   useEffect(() => {
     (async () => {
       try {
-        const count = await publicClient.readContract({ ...escrowContract, functionName: "mediatorCount" });
-        const n = Math.min(Number(count), 20);
-        const list: MediatorOption[] = [];
-        for (let i = 0; i < n; i++) {
-          const a = await publicClient.readContract({ ...escrowContract, functionName: "mediatorAt", args: [BigInt(i)] });
-          const m = await publicClient.readContract({ ...escrowContract, functionName: "getMediator", args: [a] });
-          list.push({ address: a, uri: m.metadataURI, active: m.active, proposals: m.proposals, accepted: m.accepted, unchallenged: m.unchallenged, rejected: m.rejected, missed: m.missed });
-        }
+        const count = Number(await publicClient.readContract({ ...escrowContract, functionName: "mediatorCount" }));
+        const list = await fetchMediators(0, Math.min(count, MEDIATOR_PAGE));
+        setMediatorTotal(count);
         setMediators(list);
         setMediator((cur) => cur || list.find((m) => m.active)?.address || "");
       } catch {
@@ -134,6 +182,33 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
       }
     })();
   }, []);
+
+  async function loadMoreMediators() {
+    if (!mediators) return;
+    setLoadingMore(true);
+    try {
+      const more = await fetchMediators(mediators.length, Math.min(mediatorTotal, mediators.length + MEDIATOR_PAGE));
+      const all = [...mediators, ...more];
+      setMediators(all);
+      setMediator((cur) => cur || all.find((m) => m.active)?.address || "");
+    } catch {
+      /* keep what we have; the button stays available */
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  /** Same safeguard as the list: only registered, active mediators can be chosen. */
+  async function checkManualMediator(addr: string) {
+    if (!isAddress(addr)) return setManualStatus({ address: addr, error: "That isn't a valid wallet address." });
+    setManualStatus({ address: addr, checking: true });
+    try {
+      const m = await publicClient.readContract({ ...escrowContract, functionName: "getMediator", args: [addr as Address] });
+      setManualStatus({ address: addr, error: !m.registered ? "This address isn't a registered mediator." : !m.active ? "This mediator is paused and can't take new escrows." : undefined });
+    } catch {
+      setManualStatus({ address: addr, error: "Couldn't check this mediator. Try again." });
+    }
+  }
 
   const amountUnits = useMemo(() => {
     try {
@@ -150,6 +225,8 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
   if (amountUnits <= 0n) errors.amount = amountUnits < 0n ? "Use a plain number, e.g. 250 or 99.50." : "Enter an amount above zero.";
   else if (tokenBalance !== undefined && amountUnits > tokenBalance) errors.amount = `That's more than your balance of ${fmtAmount(tokenBalance)} tUSD8.`;
   if (!isAddress(mediator)) errors.mediator = "Choose a mediator.";
+  else if (manualMediator && manualStatus?.address === mediator && manualStatus.error) errors.mediator = manualStatus.error;
+  else if (manualMediator && (manualStatus?.address !== mediator || manualStatus.checking)) errors.mediator = "Checking this mediator…";
   else if ([address, payee].some((a) => a && a.toLowerCase() === mediator.toLowerCase())) errors.mediator = "The mediator can't be one of the parties.";
   if (terms.trim().length < 10) errors.terms = "Describe what is being paid for (at least a sentence).";
   for (const k of Object.keys(win) as WinKey[]) {
@@ -157,7 +234,13 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
     if (!Number.isFinite(s) || s < 60) errors[k] = "Must be at least 1 minute.";
     else if (s > MAX_WINDOW) errors[k] = "Must be 365 days or less.";
   }
-  const blocking = gasBalance === 0n ? "You need a little tQDAY for gas. Use the faucet." : undefined;
+  const blocking = unresolved
+    ? "An earlier escrow transaction hasn't been confirmed yet. Check it below before creating another."
+    : shareRecovery
+      ? "This escrow is already funded. Finish sharing the agreement below."
+      : gasBalance === 0n
+        ? "You need a little tQDAY for gas. Use the faucet."
+        : undefined;
   const show = (k: string) => (attempted || touched[k] ? errors[k] : undefined);
   const errorCount = Object.values(errors).filter(Boolean).length;
 
@@ -194,7 +277,8 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
       };
 
       // Path 1: single transaction with an EIP-2612 permit signature (tUSD8 supports it).
-      let receipt = null;
+      // Only permit preparation can fall back; once a creation is sent, its outcome is final.
+      let outcome: TxOutcome;
       try {
         const [name, nonce] = await Promise.all([
           publicClient.readContract({ ...tokenContract, functionName: "name" }),
@@ -219,10 +303,8 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
         const call = { ...escrowContract, functionName: "createEscrowWithPermit", args: [t, deadline, v, r, s], account: address } as const;
         await publicClient.simulateContract(call);
         step({ permit: "done", create: "active" });
-        receipt = await run("Create & fund escrow", () => wallet.writeContract({ ...call, chain: wallet.chain, type: "legacy" }));
-        if (!receipt) throw new Error("create failed");
-      } catch (e) {
-        if (e instanceof Error && e.message === "create failed") throw new Error("The escrow transaction failed. See the notification for details.");
+        outcome = await track("Create & fund escrow", () => wallet.writeContract({ ...call, chain: wallet.chain, type: "legacy" }));
+      } catch {
         // Path 2: classic approve + create (wallets/tokens without permit support).
         step({ permit: "skipped", create: "todo" });
         const allowance = await publicClient.readContract({ ...tokenContract, functionName: "allowance", args: [address, config.escrow] });
@@ -240,25 +322,18 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
         const call = { ...escrowContract, functionName: "createEscrow", args: [t], account: address } as const;
         await publicClient.simulateContract(call);
         step({ create: "active" });
-        receipt = await run("Create & fund escrow", () => wallet.writeContract({ ...call, chain: wallet.chain, type: "legacy" }));
-        if (!receipt) throw new Error("The escrow transaction failed. See the notification for details.");
+        outcome = await track("Create & fund escrow", () => wallet.writeContract({ ...call, chain: wallet.chain, type: "legacy" }));
       }
-      step({ create: "done", share: "active" });
 
-      const [created] = parseEventLogs({ abi: mediatedEscrowAbi, logs: receipt.logs, eventName: "EscrowCreated" });
-      if (!created) throw new Error("Escrow created, but its id couldn't be read from the receipt. Check My escrows.");
-      const id = created.args.id;
-
-      // Share the agreement text with the mediator (it is verified against termsHash).
-      try {
-        await uploadEvidence({ wallet, account: address, escrowId: id, bytes: toBytes(terms), name: "agreement.txt", mimeType: "text/plain", kind: "terms" });
-        step({ share: "done" });
-      } catch (e) {
-        step({ share: "error" });
-        console.warn("terms upload failed", e);
+      if (outcome.status === "not-sent") throw new Error(outcome.error);
+      if (outcome.status === "reverted") throw new Error("The escrow transaction reverted, so nothing was escrowed. You can try again.");
+      if (outcome.status === "unknown") {
+        // It may still land: block another creation until we know.
+        writePendingCreate(address, outcome.hash);
+        setUnresolved(outcome.hash);
+        return;
       }
-      void refreshBalances();
-      onCreated(id);
+      await completeCreation(outcome.receipt, terms);
     } catch (e) {
       setError(explainError(e));
       setProgress((pr) => ({
@@ -267,6 +342,67 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
         create: pr.create === "active" ? "error" : pr.create,
         share: pr.share,
       }));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** After a confirmed creation: read the id, share the agreement, then navigate. */
+  async function completeCreation(receipt: TransactionReceipt, text: string) {
+    if (address) writePendingCreate(address);
+    setUnresolved(undefined);
+    step({ create: "done", share: "active" });
+    const [created] = parseEventLogs({ abi: mediatedEscrowAbi, logs: receipt.logs, eventName: "EscrowCreated" });
+    if (!created) throw new Error("Escrow created, but its id couldn't be read from the receipt. Check My escrows.");
+    void refreshBalances();
+    await shareAgreement(created.args.id, text);
+  }
+
+  /** Uploads the agreement text. On failure, keep the funded escrow and the text for recovery. */
+  async function shareAgreement(id: bigint, text: string) {
+    if (!wallet || !address) return;
+    try {
+      await uploadEvidence({ wallet, account: address, escrowId: id, bytes: toBytes(text), name: "agreement.txt", mimeType: "text/plain", kind: "terms" });
+      step({ share: "done" });
+      setShareRecovery(undefined);
+      onCreated(id);
+    } catch (e) {
+      step({ share: "error" });
+      setShareRecovery({ id, text, error: explainError(e) });
+    }
+  }
+
+  async function recheckCreation() {
+    if (!unresolved || !address) return;
+    setChecking(true);
+    setCheckNote(undefined);
+    setError(undefined);
+    try {
+      const st = await checkTx(unresolved);
+      if (st.status === "pending") setCheckNote("Still pending. It hasn't been mined yet; check again in a moment.");
+      else if (st.status === "reverted") {
+        writePendingCreate(address);
+        setUnresolved(undefined);
+        setProgress(IDLE);
+        setError("That escrow transaction reverted, so nothing was escrowed. You can create the escrow again.");
+      } else {
+        setBusy(true);
+        await completeCreation(st.receipt, terms);
+      }
+    } catch (e) {
+      setCheckNote(explainError(e));
+    } finally {
+      setChecking(false);
+      setBusy(false);
+    }
+  }
+
+  async function retryShare() {
+    if (!shareRecovery) return;
+    setBusy(true);
+    step({ share: "active" });
+    try {
+      await shareAgreement(shareRecovery.id, shareRecovery.text);
     } finally {
       setBusy(false);
     }
@@ -354,7 +490,7 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
               </div>
             ) : mediators.length === 0 ? (
               <Field label="Mediator address" hint="No mediators were found in the on-chain registry. Paste the address of one you trust." error={show("mediator")}>
-                <input className={`${inputCls} font-mono`} value={mediator} onChange={(e) => setMediator(e.target.value.trim())} onBlur={() => touch("mediator")} spellCheck={false} />
+                <input className={`${inputCls} font-mono`} value={mediator} onChange={(e) => { setMediator(e.target.value.trim()); setManualMediator(true); setManualStatus(undefined); }} onBlur={() => { touch("mediator"); setManualMediator(true); void checkManualMediator(mediator); }} spellCheck={false} />
               </Field>
             ) : (
               <fieldset aria-describedby={show("mediator") ? "mediator-err" : undefined}>
@@ -373,7 +509,7 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
                           !m.active && "cursor-not-allowed opacity-60",
                         )}
                       >
-                        <input type="radio" name="mediator" className="mt-1 h-4 w-4 accent-primary" disabled={!m.active} checked={checked} onChange={() => setMediator(m.address)} />
+                        <input type="radio" name="mediator" className="mt-1 h-4 w-4 accent-primary" disabled={!m.active} checked={checked && !manualMediator} onChange={() => { setManualMediator(false); setMediator(m.address); }} />
                         <span className="min-w-0 flex-1">
                           <span className="flex flex-wrap items-center gap-2">
                             <span className="font-mono text-sm font-semibold">{short(m.address)}</span>
@@ -392,8 +528,40 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
                     );
                   })}
                 </div>
-                {show("mediator") && <p id="mediator-err" className="mt-2 text-xs font-medium text-red-600 dark:text-red-400">{show("mediator")}</p>}
+                {show("mediator") && !manualMediator && <p id="mediator-err" className="mt-2 text-xs font-medium text-red-600 dark:text-red-400">{show("mediator")}</p>}
+                {mediators.length < mediatorTotal && (
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <Button size="sm" variant="secondary" busy={loadingMore} busyLabel="Loading…" onClick={loadMoreMediators}>
+                      Show more mediators ({mediatorTotal - mediators.length} more)
+                    </Button>
+                    {!mediators.some((m) => m.active) && <span className="text-xs text-gray-500 dark:text-gray-400">All mediators shown so far are paused.</span>}
+                  </div>
+                )}
               </fieldset>
+            )}
+            {mediators !== undefined && mediators.length > 0 && (
+              <div className="mt-4 border-t border-gray-100 pt-4 dark:border-gray-700">
+                {manualMediator ? (
+                  <Field label="Mediator address" hint="Paste the address of a registered mediator you trust." error={show("mediator")} success={manualStatus && manualStatus.address === mediator && !manualStatus.error && !manualStatus.checking ? "Registered and accepting escrows" : undefined}>
+                    <input
+                      className={`${inputCls} font-mono`}
+                      value={mediator}
+                      onChange={(e) => { setMediator(e.target.value.trim()); setManualStatus(undefined); }}
+                      onBlur={() => { touch("mediator"); void checkManualMediator(mediator); }}
+                      spellCheck={false}
+                    />
+                  </Field>
+                ) : (
+                  <Button size="sm" variant="ghost" onClick={() => { setManualMediator(true); setMediator(""); setManualStatus(undefined); }}>
+                    Use a different mediator address
+                  </Button>
+                )}
+                {manualMediator && (
+                  <Button size="sm" variant="ghost" className="mt-2" onClick={() => { setManualMediator(false); setMediator(mediators.find((m) => m.active)?.address ?? ""); }}>
+                    Choose from the list instead
+                  </Button>
+                )}
+              </div>
             )}
           </Card>
 
@@ -456,12 +624,31 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
                 </div>
               )}
               {error && <Notice tone="error" title="Escrow not created">{error}</Notice>}
+              {unresolved && (
+                <Notice tone="warn" title="Waiting to confirm your escrow transaction">
+                  <p>It was submitted but hasn&apos;t been confirmed. It may still go through, so creating another escrow now could lock funds twice.</p>
+                  <p className="mt-1"><TxLink hash={unresolved} label="View transaction" /></p>
+                  {checkNote && <p className="mt-1">{checkNote}</p>}
+                  <Button size="sm" variant="secondary" className="mt-2" busy={checking} busyLabel="Checking…" onClick={recheckCreation}>Check again</Button>
+                </Notice>
+              )}
+              {shareRecovery && (
+                <Notice tone="warn" title={`Escrow #${shareRecovery.id} is funded, but the agreement wasn't shared`}>
+                  <p>{shareRecovery.error}</p>
+                  <p className="mt-1">The payee and mediator need the agreement text. Retry now, and keep a copy in case you need it later.</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button size="sm" busy={busy} busyLabel="Sharing…" onClick={retryShare}>Retry sharing</Button>
+                    <Button size="sm" variant="secondary" onClick={() => downloadText(`escrow-${shareRecovery.id}-agreement.txt`, shareRecovery.text)}>Download agreement</Button>
+                    <Button size="sm" variant="ghost" onClick={() => onCreated(shareRecovery.id)}>Continue without sharing</Button>
+                  </div>
+                </Notice>
+              )}
               {showProgress && (
                 <div className="rounded-lg p-4 border" aria-live="polite">
                   <ProgressSteps steps={progressSteps} />
                 </div>
               )}
-              <Button size="lg" className="w-full" disabled={!wallet} busy={busy} busyLabel="Working… check your wallet" onClick={onSubmitClick}>
+              <Button size="lg" className="w-full" disabled={!wallet || Boolean(unresolved) || Boolean(shareRecovery)} busy={busy} busyLabel="Working… check your wallet" onClick={onSubmitClick}>
                 <IconLock /> Lock {amountUnits > 0n ? fmtAmount(amountUnits) : ""} tUSD8
               </Button>
               <p className="text-center text-xs text-gray-500 dark:text-gray-400">Usually one signature and one transaction. You&apos;ll review each in your wallet.</p>

@@ -3,7 +3,7 @@ import { bpsOf, hashJson } from "./canonical.ts";
 import { chainNow, escrowContract, readEscrow, Status, type EscrowView, type PublicClient, type WalletClient } from "./chain.ts";
 import type { Config } from "./config.ts";
 import type { DecisionEngine, DisputeContext, EvidenceItem } from "./policy.ts";
-import type { Job, Store } from "./store.ts";
+import { findUpload, type Job, type Store } from "./store.ts";
 
 export interface WorkerDeps {
   cfg: Config;
@@ -108,6 +108,13 @@ export class MediatorWorker {
     }
 
     try {
+      // 0. Is the session key allowed to propose right now? If not (expired, revoked, out of
+      //    budget, mediator paused), wait for renewal instead of deciding or failing the job.
+      if (!(await this.sessionKeyAuthorized())) {
+        await this.block(job, "session key is not authorized to propose; waiting for it to be renewed");
+        return;
+      }
+
       // 1. Decide once. Re-use a stored decision on retries so the commitment stays stable.
       if (!job.reasoningHash || !job.payeeAmount) {
         job = await store.saveJob({ ...job, status: "deciding" });
@@ -159,6 +166,10 @@ export class MediatorWorker {
       await store.saveJob({ ...job, status: "submitted", lastError: undefined });
       log("proposal submitted", { escrowId: id.toString(), txHash, explorer: `${cfg.EXPLORER_URL}/tx/${txHash}` });
     } catch (err) {
+      if (isAuthorization(err)) {
+        await this.block(job, errorMessage(err));
+        return;
+      }
       const attempts = job.attempts + 1;
       const permanent = isPermanent(err) || attempts >= cfg.MAX_SUBMIT_ATTEMPTS;
       const backoff = Math.min(10 * 60_000, 2 ** attempts * 5_000);
@@ -171,6 +182,22 @@ export class MediatorWorker {
       });
       log("proposal attempt failed", { escrowId: id.toString(), attempts, permanent, error: errorMessage(err) });
     }
+  }
+
+  /** Retry after a short delay without consuming attempts; tick re-checks the window. */
+  private async block(job: Omit<Job, "updatedAt">, reason: string) {
+    await this.d.store.saveJob({ ...job, status: "blocked", nextAttemptAt: Date.now() + BLOCKED_RETRY_MS, lastError: reason });
+    this.d.log("proposal blocked", { escrowId: job.escrowId, reason });
+  }
+
+  private async sessionKeyAuthorized(): Promise<boolean> {
+    const key = this.d.walletClient?.account?.address;
+    if (!key) return false;
+    return this.d.publicClient.readContract({
+      ...escrowContract(this.d.cfg.ESCROW_ADDRESS),
+      functionName: "canPropose",
+      args: [this.d.cfg.MEDIATOR_ADDRESS, key],
+    });
   }
 
   async buildContext(id: bigint, escrow: EscrowView): Promise<DisputeContext> {
@@ -188,13 +215,13 @@ export class MediatorWorker {
       const base = { index, party: partyOf(e.submitter), submittedAt: Number(e.submittedAt), contentHash: e.contentHash };
       try {
         const found = await store.getVerifiedEvidence(e.contentHash);
-        // Only content uploaded *for this escrow by this submitter* is considered.
-        const linked = found?.meta.uploads.some(
-          (u) => u.escrowId === id.toString() && u.uploader.toLowerCase() === e.submitter.toLowerCase(),
-        );
-        if (!found || !linked) evidence.push({ ...base, status: "missing" });
+        // Only content uploaded *for this escrow by this submitter* is considered, and its
+        // name/type come from that upload (prefer the evidence-kind record).
+        const q = { escrowId: id.toString(), uploader: e.submitter };
+        const upload = found && (findUpload(found.meta, { ...q, kind: "evidence" }) ?? findUpload(found.meta, q));
+        if (!found || !upload) evidence.push({ ...base, status: "missing" });
         else if (found.bytes.byteLength > cfg.MAX_EVIDENCE_BYTES) evidence.push({ ...base, status: "unsupported" });
-        else evidence.push({ ...base, status: "verified", name: found.meta.name, mimeType: found.meta.mimeType, bytes: found.bytes });
+        else evidence.push({ ...base, status: "verified", name: upload.name, mimeType: upload.mimeType, bytes: found.bytes });
       } catch {
         evidence.push({ ...base, status: "integrity_failure" });
       }
@@ -203,7 +230,10 @@ export class MediatorWorker {
     let termsText: string | undefined;
     try {
       const terms = await store.getVerifiedEvidence(escrow.termsHash);
-      if (terms && terms.meta.kind === "terms") termsText = new TextDecoder().decode(terms.bytes);
+      // The agreement counts only if the payer uploaded these bytes as the terms of this escrow.
+      if (terms && findUpload(terms.meta, { escrowId: id.toString(), uploader: escrow.payer, kind: "terms" })) {
+        termsText = new TextDecoder().decode(terms.bytes);
+      }
     } catch {
       /* terms unavailable */
     }
@@ -232,17 +262,22 @@ function baseJob(id: bigint): Omit<Job, "updatedAt"> {
   return { escrowId: id.toString(), status: "pending", attempts: 0 };
 }
 
+const BLOCKED_RETRY_MS = 60_000;
+
+function revertName(err: unknown): string | undefined {
+  if (!(err instanceof BaseError)) return undefined;
+  const revert = err.walk((e) => e instanceof ContractFunctionRevertedError);
+  return revert instanceof ContractFunctionRevertedError ? revert.data?.errorName : undefined;
+}
+
+/** Wrong status / deadline / bounds: retrying will not help. */
 function isPermanent(err: unknown): boolean {
-  if (err instanceof BaseError) {
-    const revert = err.walk((e) => e instanceof ContractFunctionRevertedError);
-    if (revert instanceof ContractFunctionRevertedError) {
-      // Wrong status / authorization / deadline: retrying will not help.
-      return ["WrongStatus", "NotAuthorizedMediator", "DeadlinePassed", "AmountExceedsEscrow"].includes(
-        revert.data?.errorName ?? "",
-      );
-    }
-  }
-  return false;
+  return ["WrongStatus", "DeadlinePassed", "AmountExceedsEscrow"].includes(revertName(err) ?? "");
+}
+
+/** The key lost (or never had) authority; renewing the session key fixes it. */
+function isAuthorization(err: unknown): boolean {
+  return revertName(err) === "NotAuthorizedMediator";
 }
 
 export function errorMessage(err: unknown): string {

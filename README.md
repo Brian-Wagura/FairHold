@@ -120,7 +120,7 @@ Full design and invariants: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | --- | --- |
 | [`contracts/src/MediatedEscrow.sol`](contracts/src/MediatedEscrow.sol) | Escrow state machine, settlement, permissionless finalization |
 | [`contracts/src/MediatorRegistry.sol`](contracts/src/MediatorRegistry.sol) | Mediator identity, scoped session keys, outcome-based reputation |
-| [`contracts/test/`](contracts/test/) | 60 Foundry tests: unit, boundary, reentrancy and fuzz |
+| [`contracts/test/`](contracts/test/) | 61 Foundry tests: unit, boundary, reentrancy and fuzz |
 | [`contracts/script/`](contracts/script/) | `Deploy`, `SetupMediator`, `LocalDemo` |
 | [`mediator/src/`](mediator/src/) | Worker, decision engines (Claude / rules), evidence API, store |
 | [`mediator/test/`](mediator/test/) | Unit tests + an end-to-end test on a real anvil chain |
@@ -260,7 +260,7 @@ In `web/.env.local` set chain `31337`, RPC `http://127.0.0.1:8545`, and the prin
 | `ANTHROPIC_API_KEY` | for `claude` | | Anthropic API credentials |
 | `ANTHROPIC_MODEL` | | `claude-opus-5-5` | Model id |
 | `PORT` / `HOST` | | `8787` / `0.0.0.0` | HTTP listener |
-| `EVIDENCE_DIR` | | `../evidence-data` | Content-addressed store (git-ignored) |
+| `EVIDENCE_DIR` | | `../evidence-data` | Store root (git-ignored). Data lives in `deployments/<CHAIN_ID>-<escrow address>/`, so a redeployed contract or another chain never inherits old jobs or uploads |
 | `POLL_INTERVAL_MS` | | `15000` | Chain polling interval (Aevum has no websockets) |
 | `CORS_ORIGINS` | | `http://localhost:3000` | Comma-separated allowed web origins |
 | `MAX_EVIDENCE_BYTES` | | `5242880` | Upload limit |
@@ -331,7 +331,7 @@ cast send $ESCROW "finalize(uint256)" 1 --legacy --account aevum-deployer --rpc-
 | `GET` | `/health` | none | Chain, session key authorization, budget, reputation, worker state |
 | `GET` | `/jobs` | none | Per-escrow job state (no evidence, no keys) |
 | `POST` | `/evidence` | payer/payee signature | Upload evidence or the agreement text |
-| `GET` | `/evidence/:hash?escrowId&expires&signature` | payer/payee signature, ≤ 1 h grant | Download evidence (re-verified) |
+| `POST` | `/evidence/:hash/read` | payer/payee signature, ≤ 1 h grant, in the JSON body `{escrowId, expires, signature}` | Download evidence (re-verified). Grants never travel in URLs, and request logs record method, path and id only |
 | `GET` | `/reasoning/:hash` | none | Mediator rationale; `keccak256(body) == on-chain reasoningHash` |
 
 Upload signature (EIP-191 `personal_sign`; ERC-1271 smart accounts are verified too):
@@ -371,6 +371,9 @@ curl -s $MEDIATOR/reasoning/0x6ea7… | cast keccak
 | Terms bait-and-switch | The payee signs `termsDigest`, which covers every term and is bound to chain, contract and id. |
 | Evidence tampering | On-chain hashes. The store re-hashes on every read, and the UI re-hashes on download. Unverified items are shown to the AI as "missing". |
 | Evidence privacy | Raw files never go on-chain. Reads need a fresh party signature (≤ 1 h) and grants are kept in memory only. |
+| Malicious evidence files | The browser opens only images, PDFs and text (shown as plain text) after re-checking the hash; HTML, SVG and other active content is downloaded, never rendered in the app's origin. |
+| Expired or revoked session key | Disputes wait in a `blocked` state and resume as soon as the key is renewed within the proposal window; otherwise the contract fallback applies. |
+| Unconfirmed creation tx | The UI keeps the hash and blocks another creation until the transaction is confirmed or known to have reverted, so funds are never locked twice. |
 | Stale offers | Offers reset on every state transition. |
 | Reentrancy / transfer failure | Checks-effects-interactions plus `nonReentrant`. A failed transfer reverts the whole settlement. |
 | Fee-on-transfer tokens | Rejected by a balance-delta check at funding. |
@@ -385,7 +388,7 @@ curl -s $MEDIATOR/reasoning/0x6ea7… | cast keccak
 cd contracts && forge test
 ```
 
-60 tests cover creation, permit, invalid terms, acceptance boundaries, digest binding, cancel/expiry, matching and mismatched offers, stale offer reset, evidence windows and caps, proposal timing, bounds and authorization, session expiry, budget, revocation and pausing, accept/reject/timeout, mediator timeout, terminal-state lockout, reentrancy, and fuzzing of bps splits, proposal conservation and deadline arithmetic.
+61 tests cover creation, permit, invalid terms, acceptance boundaries, digest binding, cancel/expiry, matching and mismatched offers, stale offer reset, evidence windows, per-party and total caps, proposal timing, bounds and authorization, session expiry, budget, revocation and pausing, accept/reject/timeout, mediator timeout, terminal-state lockout, reentrancy, and fuzzing of bps splits, proposal conservation and deadline arithmetic.
 
 ```bash
 cd mediator && npm test

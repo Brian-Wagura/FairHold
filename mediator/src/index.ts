@@ -4,7 +4,7 @@ import { makeClients } from "./chain.ts";
 import { loadConfig } from "./config.ts";
 import { ClaudeEngine, RulesEngine, type DecisionEngine } from "./policy.ts";
 import { buildServer } from "./server.ts";
-import { Store } from "./store.ts";
+import { openDeploymentStore } from "./store.ts";
 import { MediatorWorker } from "./worker.ts";
 
 async function main() {
@@ -22,8 +22,18 @@ async function main() {
     engine = new RulesEngine();
   }
 
-  const store = new Store(resolve(cfg.EVIDENCE_DIR));
-  await store.init();
+  // One namespace per (chain, escrow contract): escrow ids restart at 1 on every deployment.
+  const { store, dir: storeDir, legacyDataAt } = await openDeploymentStore(resolve(cfg.EVIDENCE_DIR), {
+    chainId: cfg.CHAIN_ID,
+    escrow: cfg.ESCROW_ADDRESS,
+  });
+  if (legacyDataAt) {
+    console.warn(
+      `Found un-namespaced store data in ${legacyDataAt} from an older version. It was left untouched because ` +
+        `its deployment can't be confirmed. If it belongs to chain ${cfg.CHAIN_ID} escrow ${cfg.ESCROW_ADDRESS}, ` +
+        `move its jobs.json, evidence/ and reasoning/ into ${storeDir} while the service is stopped.`,
+    );
+  }
 
   let app: ReturnType<typeof buildServer> | undefined;
   const worker = new MediatorWorker({

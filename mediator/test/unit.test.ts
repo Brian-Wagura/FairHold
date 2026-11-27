@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { keccak256, toBytes } from "viem";
 import { bpsOf, canonicalJson, hashJson } from "../src/canonical.ts";
 import { readGrantIsFresh, uploadMessage } from "../src/auth.ts";
 import { DecisionSchema, RulesEngine, buildUserContent, type DisputeContext } from "../src/policy.ts";
-import { Store } from "../src/store.ts";
+import { Store, deploymentNamespace, findUpload, openDeploymentStore } from "../src/store.ts";
 import { loadConfig } from "../src/config.ts";
 
 test("canonicalJson sorts keys recursively and is stable", () => {
@@ -136,4 +136,101 @@ test("config rejects bad addresses and keys with readable errors", () => {
     () => loadConfig({ ESCROW_ADDRESS: "0x0000000000000000000000000000000000000001", MEDIATOR_ADDRESS: "0x0000000000000000000000000000000000000001", SESSION_KEY_PRIVATE_KEY: "0x12" }),
     /SESSION_KEY_PRIVATE_KEY/,
   );
+});
+
+const ESCROW_A = "0xAbCdEf0000000000000000000000000000000001";
+const ESCROW_B = "0x0000000000000000000000000000000000000002";
+
+test("stores are namespaced per chain and escrow, stably across restarts", async () => {
+  const base = await mkdtemp(join(tmpdir(), "fairhold-ns-"));
+  assert.equal(deploymentNamespace({ chainId: 44005, escrow: ESCROW_A }), "44005-0xabcdef0000000000000000000000000000000001");
+
+  const a = await openDeploymentStore(base, { chainId: 44005, escrow: ESCROW_A });
+  await a.store.saveJob({ escrowId: "1", status: "submitted", attempts: 1 });
+
+  // Same deployment, different address casing, after a restart: same data.
+  const again = await openDeploymentStore(base, { chainId: 44005, escrow: ESCROW_A.toLowerCase() });
+  assert.equal(again.dir, a.dir);
+  assert.equal(again.store.getJob("1")?.status, "submitted");
+
+  // A redeployed contract or another chain starts clean: escrow #1 is not "already handled".
+  const b = await openDeploymentStore(base, { chainId: 44005, escrow: ESCROW_B });
+  const c = await openDeploymentStore(base, { chainId: 31337, escrow: ESCROW_A });
+  assert.equal(b.store.getJob("1"), undefined);
+  assert.equal(c.store.getJob("1"), undefined);
+  assert.notEqual(b.dir, a.dir);
+  assert.notEqual(c.dir, a.dir);
+});
+
+test("a store owned by another deployment is refused", async () => {
+  const base = await mkdtemp(join(tmpdir(), "fairhold-ns-"));
+  const { dir } = await openDeploymentStore(base, { chainId: 44005, escrow: ESCROW_A });
+  await writeFile(join(dir, "deployment.json"), JSON.stringify({ chainId: 1, escrow: ESCROW_B.toLowerCase() }));
+  await assert.rejects(openDeploymentStore(base, { chainId: 44005, escrow: ESCROW_A }), /belongs to chain 1/);
+});
+
+test("legacy un-namespaced data is reported but never migrated or reused", async () => {
+  const base = await mkdtemp(join(tmpdir(), "fairhold-ns-"));
+  const legacy = JSON.stringify([{ escrowId: "1", status: "submitted", attempts: 1, updatedAt: "x" }]);
+  await writeFile(join(base, "jobs.json"), legacy);
+  await mkdir(join(base, "evidence"));
+
+  const opened = await openDeploymentStore(base, { chainId: 44005, escrow: ESCROW_A });
+  assert.equal(opened.legacyDataAt, base);
+  assert.equal(opened.store.getJob("1"), undefined, "legacy job must not be attributed to this deployment");
+  assert.equal(await readFile(join(base, "jobs.json"), "utf8"), legacy, "legacy data left untouched");
+
+  const clean = await mkdtemp(join(tmpdir(), "fairhold-ns-"));
+  assert.equal((await openDeploymentStore(clean, { chainId: 44005, escrow: ESCROW_A })).legacyDataAt, undefined);
+});
+
+const PAYER = "0x00000000000000000000000000000000000000Aa";
+const PAYEE = "0x00000000000000000000000000000000000000bB";
+
+test("concurrent uploads of the same content keep every escrow/uploader link", async () => {
+  const store = new Store(await mkdtemp(join(tmpdir(), "fairhold-lock-")));
+  await store.init();
+  const bytes = new TextEncoder().encode("shared receipt");
+  await Promise.all(
+    Array.from({ length: 12 }, (_, i) =>
+      store.putEvidence(bytes, { kind: "evidence", name: `r${i}.txt`, mimeType: "text/plain" }, { escrowId: String(i + 1), uploader: i % 2 ? PAYER : PAYEE }),
+    ),
+  );
+  const meta = (await store.getMeta(keccak256(bytes)))!;
+  assert.equal(meta.uploads.length, 12);
+  assert.deepEqual(meta.uploads.map((u) => u.escrowId).sort((a, b) => Number(a) - Number(b)), Array.from({ length: 12 }, (_, i) => String(i + 1)));
+});
+
+test("kind, name and mimeType come from each upload, not the first one", async () => {
+  const store = new Store(await mkdtemp(join(tmpdir(), "fairhold-meta-")));
+  await store.init();
+  const bytes = new TextEncoder().encode("Logo design, 3 concepts.");
+  await store.putEvidence(bytes, { kind: "evidence", name: "proof.txt", mimeType: "text/plain" }, { escrowId: "1", uploader: PAYEE });
+  await store.putEvidence(bytes, { kind: "terms", name: "agreement.md", mimeType: "text/markdown" }, { escrowId: "2", uploader: PAYER });
+  const meta = (await store.getMeta(keccak256(bytes)))!;
+  assert.equal(findUpload(meta, { escrowId: "1" })?.kind, "evidence");
+  assert.equal(findUpload(meta, { escrowId: "2", uploader: PAYER.toLowerCase(), kind: "terms" })?.mimeType, "text/markdown");
+  assert.equal(findUpload(meta, { escrowId: "2", kind: "evidence" }), undefined);
+  // Re-uploading the same (escrow, uploader, kind) refreshes only that record.
+  await store.putEvidence(bytes, { kind: "evidence", name: "proof-v2.txt", mimeType: "text/plain" }, { escrowId: "1", uploader: PAYEE });
+  const again = (await store.getMeta(keccak256(bytes)))!;
+  assert.equal(again.uploads.length, 2);
+  assert.equal(findUpload(again, { escrowId: "1" })?.name, "proof-v2.txt");
+  assert.equal(findUpload(again, { escrowId: "2" })?.name, "agreement.md");
+});
+
+test("metadata written by older versions is read with its per-file fields", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fairhold-legacy-meta-"));
+  const store = new Store(dir);
+  await store.init();
+  const bytes = new TextEncoder().encode("old file");
+  const hash = keccak256(bytes);
+  await writeFile(join(dir, "evidence", `${hash}.bin`), bytes);
+  await writeFile(
+    join(dir, "evidence", `${hash}.json`),
+    JSON.stringify({ contentHash: hash, kind: "terms", name: "old.txt", mimeType: "text/plain", size: bytes.length, uploadedAt: "2026-01-01T00:00:00Z", uploads: [{ escrowId: "3", uploader: PAYER }] }),
+  );
+  const up = findUpload((await store.getMeta(hash))!, { escrowId: "3", kind: "terms" });
+  assert.equal(up?.name, "old.txt");
+  assert.equal(up?.mimeType, "text/plain");
 });

@@ -362,13 +362,13 @@ These choices were left open above and are now fixed by the code.
 | Deadlines | Stored as durations at creation and turned into absolute timestamps when each phase starts: `activeDeadline` at acceptance, `evidenceDeadline` and `proposeDeadline` at dispute, `responseDeadline` at proposal. Every window is between 1 minute and 365 days. |
 | Expired acceptance | After `acceptBy`, anyone may call `finalize` to refund the payer (`Resolution.Expired`). Before acceptance the payer can `cancel` at any time. |
 | Mutual offers | Available in `Active`, `Disputed` and `Proposed`. Offers are reset on every state transition, so a stale pre-dispute offer can never match. A party can also `withdrawOffer`. |
-| Evidence | Allowed while `Active` and during the dispute evidence window. At most 64 items per escrow. The contract stores only `(hash, submitter, timestamp)`. The URI is emitted in an event and never stored. |
+| Evidence | Allowed while `Active` and during the dispute evidence window. At most 64 items per escrow, with 32 reserved for each party so one side cannot exhaust the list before or during a dispute. The contract stores only `(hash, submitter, timestamp)`. The URI is emitted in an event and never stored. |
 | Proposal bounds | A `payeeAmount` above the escrow amount **reverts** (it is not capped). A zero `reasoningHash` reverts. |
 | Rejection | Any rejection settles the dispute fallback split immediately. Silence until `responseDeadline` executes the proposal (`ProposalUnchallenged`). |
 | Mediator identity | `MediatorRegistry` follows the ERC-8004 pattern: registered identity plus metadata URI, and reputation counters (`proposals`, `accepted`, `unchallenged`, `rejected`, `missed`) written only by the escrow's own state transitions. |
 | Mediator key | The owner key stays cold. The AI service signs with a **session key** that can only call `propose`, expires (at most 30 days), has a proposal budget, and can be revoked instantly. A paused mediator cannot be chosen for new escrows and cannot propose. |
 | Transfers | Push transfers via SafeERC20 after all state is written (checks-effects-interactions) plus `nonReentrant`. A failing transfer reverts the whole settlement. |
-| Evidence store | The mediator service keeps evidence content-addressed by keccak256 and re-hashes it on every read. Uploads and reads are authenticated with wallet signatures (EIP-191, ERC-1271 compatible) from the escrow's payer or payee. |
+| Evidence store | The mediator service keeps evidence content-addressed by keccak256 and re-hashes it on every read. Uploads and reads are authenticated with wallet signatures (EIP-191, ERC-1271 compatible) from the escrow's payer or payee. State is namespaced per deployment (`<chainId>-<escrow address>`, with an owner marker) because escrow ids restart at 1 on every deployment; pre-namespace data is left in place, never auto-migrated. |
 | Reasoning commitment | `reasoningHash = keccak256(canonical JSON of the decision document)`. Anyone can fetch it from `GET /reasoning/:hash` and recompute the hash. |
 
 Solidity enums mirrored off-chain:

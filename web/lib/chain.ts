@@ -10,6 +10,8 @@ import {
   type Address,
   type EIP1193Provider,
   type Hash,
+  type TransactionReceipt,
+  TransactionReceiptNotFoundError,
   type WalletClient,
 } from "viem";
 import { mediatedEscrowAbi } from "./abi";
@@ -97,10 +99,28 @@ export async function chainTimeOffsetMs(): Promise<number> {
   return Number(block.timestamp) * 1000 - Date.now();
 }
 
+/** The transaction was mined and reverted: it definitely had no effect. */
+export class TxRevertedError extends Error {
+  constructor(readonly hash: Hash) {
+    super("The transaction was mined but reverted.");
+  }
+}
+
 export async function waitForTx(hash: Hash) {
   const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120_000, pollingInterval: 1_500 });
-  if (receipt.status !== "success") throw new Error("The transaction was mined but reverted.");
+  if (receipt.status !== "success") throw new TxRevertedError(hash);
   return receipt;
+}
+
+/** One-shot status check for a transaction whose outcome is not yet known. */
+export async function checkTx(hash: Hash): Promise<{ status: "confirmed"; receipt: TransactionReceipt } | { status: "reverted" } | { status: "pending" }> {
+  try {
+    const receipt = await publicClient.getTransactionReceipt({ hash });
+    return receipt.status === "success" ? { status: "confirmed", receipt } : { status: "reverted" };
+  } catch (e) {
+    if (e instanceof TransactionReceiptNotFoundError) return { status: "pending" };
+    throw e;
+  }
 }
 
 /**

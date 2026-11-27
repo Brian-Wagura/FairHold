@@ -21,7 +21,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { mediatedEscrowAbi } from "../src/abi.ts";
-import { uploadMessage } from "../src/auth.ts";
+import { readMessage, uploadMessage } from "../src/auth.ts";
 import { aevumChain } from "../src/chain.ts";
 import { loadConfig } from "../src/config.ts";
 import type { DecisionEngine, DisputeContext } from "../src/policy.ts";
@@ -150,14 +150,14 @@ test("dispute → evidence → AI proposal via session key → both accept → s
   const worker = new MediatorWorker({ cfg, publicClient: publicClient as never, walletClient: walletClient as never, store, engine, log: () => {} });
   const app = buildServer({ cfg, publicClient: publicClient as never, store, worker, sessionKey: addr.session });
 
-  async function upload(k: Hex, kind: "terms" | "evidence", body: string, mimeType = "text/plain") {
+  async function upload(k: Hex, kind: "terms" | "evidence", body: string, mimeType = "text/plain", escrowIdField = "1") {
     const bytes = toBytes(body);
     const contentHash = keccak256(bytes);
     const signature = await wallet(k).signMessage({ message: uploadMessage({ chainId: 31337, escrow, escrowId: id, contentHash, kind }) });
     return app.inject({
       method: "POST",
       url: "/evidence",
-      payload: { escrowId: "1", kind, name: `${kind}.txt`, mimeType, contentBase64: Buffer.from(bytes).toString("base64"), signature },
+      payload: { escrowId: escrowIdField, kind, name: `${kind}.txt`, mimeType, contentBase64: Buffer.from(bytes).toString("base64"), signature },
     });
   }
 
@@ -166,9 +166,20 @@ test("dispute → evidence → AI proposal via session key → both accept → s
   assert.equal((await upload(KEYS.stranger, "evidence", "fake")).statusCode, 403, "strangers cannot upload");
 
   const evidenceText = "Delivered concepts A and B on day 4 (links in thread). Concept C pending client feedback.";
-  const up = await upload(KEYS.payee, "evidence", evidenceText);
+  // A non-canonical id ("001") is stored under the canonical key, so the worker still links it.
+  const up = await upload(KEYS.payee, "evidence", evidenceText, "text/plain", "001");
   assert.equal(up.statusCode, 201);
   const { contentHash, uri } = up.json() as { contentHash: Hex; uri: string };
+
+  // Read grants go in a POST body, never the URL; the old query-string route is gone.
+  const expires = Math.floor(Date.now() / 1000) + 600;
+  const readSig = await wallet(KEYS.payer).signMessage({ message: readMessage({ chainId: 31337, escrow, escrowId: id, expires }) });
+  const read = await app.inject({ method: "POST", url: `/evidence/${contentHash}/read`, payload: { escrowId: "01", expires, signature: readSig } });
+  assert.equal(read.statusCode, 200);
+  assert.equal(read.body, evidenceText);
+  assert.equal(read.headers["content-type"], "text/plain");
+  const viaQuery = await app.inject({ method: "GET", url: `/evidence/${contentHash}?escrowId=1&expires=${expires}&signature=${readSig}` });
+  assert.equal(viaQuery.statusCode, 404);
   await send(KEYS.payee, escrow, mediatedEscrowAbi, "submitEvidence", [id, contentHash, uri]);
   // A hash committed on-chain without uploading the file is reported as missing.
   await send(KEYS.payer, escrow, mediatedEscrowAbi, "openDispute", [id]);
@@ -178,8 +189,18 @@ test("dispute → evidence → AI proposal via session key → both accept → s
   await worker.tick();
   assert.equal(seen, undefined);
 
+  // An unauthorized session key blocks the job without failing it or spending on a decision...
+  await send(KEYS.mediator, escrow, mediatedEscrowAbi, "revokeSessionKey", []);
   await testClient.increaseTime({ seconds: 3_601 });
   await testClient.mine({ blocks: 1 });
+  await worker.tick();
+  assert.equal(store.getJob("1")?.status, "blocked");
+  assert.equal(seen, undefined, "no decision while the key is unauthorized");
+
+  // ...and renewing the key resumes it within the proposal window.
+  const later = (await publicClient.getBlock()).timestamp;
+  await send(KEYS.mediator, escrow, mediatedEscrowAbi, "setSessionKey", [addr.session, later + 86_400n, 3]);
+  await store.saveJob({ ...store.getJob("1")!, nextAttemptAt: undefined }); // skip the retry delay
   await worker.tick();
 
   const ctx = seen as DisputeContext | undefined;

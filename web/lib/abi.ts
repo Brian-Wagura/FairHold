@@ -39,6 +39,19 @@ export const mediatedEscrowAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_EVIDENCE_PER_PARTY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_SESSION_DURATION",
     "inputs": [],
     "outputs": [

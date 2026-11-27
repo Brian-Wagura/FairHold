@@ -14,7 +14,7 @@ import { useWallet } from "./wallet";
 type Mediator = Awaited<ReturnType<typeof readMediator>>;
 const readMediator = (a: Address) => publicClient.readContract({ ...escrowContract, functionName: "getMediator", args: [a] });
 
-const JOB_TONE: Record<string, Tone> = { submitted: "success", pending: "info", deciding: "ai", submitting: "info", failed: "danger", skipped: "neutral" };
+const JOB_TONE: Record<string, Tone> = { submitted: "success", pending: "info", deciding: "ai", blocked: "warn", submitting: "info", failed: "danger", skipped: "neutral" };
 
 export function MediatorConsole() {
   const { address, wallet, connect, connecting } = useWallet();

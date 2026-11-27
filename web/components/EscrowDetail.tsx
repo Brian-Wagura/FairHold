@@ -6,7 +6,7 @@ import { Resolution, Status, chainTimeOffsetMs, escrowContract, escrowHistory, p
 import { config } from "@/lib/config";
 import { ROLE_LABEL, describePhase, finalizeReady, roleOf, type Role } from "@/lib/escrow-view";
 import { explainError, fmtAmount, fmtDate, parseAmount, pct, short } from "@/lib/format";
-import { fetchReasoning, hashFile, openEvidence, uploadEvidence, type ReasoningDoc } from "@/lib/mediator-api";
+import { fetchReasoning, hashFile, openEvidence, showEvidence, uploadEvidence, type ReasoningDoc } from "@/lib/mediator-api";
 import { IconAlert, IconArrowLeft, IconCheck, IconClock, IconFile, IconHandshake, IconRefresh, IconShield, IconSparkle, IconUpload, IconX } from "./icons";
 import { useTx } from "./tx";
 import {
@@ -493,8 +493,8 @@ function AcceptPanel({ e, id, role, busy, act }: { e: Escrow; id: bigint; role: 
     setErr(undefined);
     setLoadingTerms(true);
     try {
-      const blob = await openEvidence({ wallet, account: address, escrowId: id, hash: e.termsHash });
-      setTerms(await blob.text());
+      const opened = await openEvidence({ wallet, account: address, escrowId: id, hash: e.termsHash });
+      setTerms(await opened.blob.text());
     } catch (x) {
       setErr(explainError(x));
     } finally {
@@ -773,8 +773,7 @@ function EvidencePanel({ e, id, evidence, role, now, onChange }: { e: Escrow; id
     setErr(undefined);
     setOpening(hash);
     try {
-      const blob = await openEvidence({ wallet, account: address, escrowId: id, hash });
-      window.open(URL.createObjectURL(blob), "_blank", "noopener");
+      showEvidence(await openEvidence({ wallet, account: address, escrowId: id, hash }));
     } catch (x) {
       setErr(explainError(x));
     } finally {

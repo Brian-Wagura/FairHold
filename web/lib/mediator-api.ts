@@ -66,7 +66,23 @@ export async function uploadEvidence(p: {
 // Read grants live in memory only (never persisted), and expire within the hour.
 const grants = new Map<string, { expires: number; signature: Hex }>();
 
-export async function openEvidence(p: { wallet: WalletClient; account: Address; escrowId: bigint; hash: Hex }): Promise<Blob> {
+/**
+ * Types the app will display inline. Anything else (HTML, SVG, scripts, unknown binaries) is
+ * downloaded instead: a blob: URL inherits the app's origin, so rendering active content from it
+ * could run script in the app.
+ */
+const INLINE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"]);
+const AS_PLAIN_TEXT = /^(text\/[\w.+-]+|application\/(json|xml|x-ndjson))$/;
+
+export interface OpenedEvidence {
+  /** Re-typed blob that is safe for the chosen handling. */
+  blob: Blob;
+  /** true: safe to open in a tab. false: offer as a download only. */
+  inline: boolean;
+  filename: string;
+}
+
+export async function openEvidence(p: { wallet: WalletClient; account: Address; escrowId: bigint; hash: Hex }): Promise<OpenedEvidence> {
   const key = `${p.account}:${p.escrowId}`;
   let g = grants.get(key);
   const now = Math.floor(Date.now() / 1000);
@@ -79,12 +95,37 @@ export async function openEvidence(p: { wallet: WalletClient; account: Address; 
     g = { expires, signature };
     grants.set(key, g);
   }
-  const q = new URLSearchParams({ escrowId: p.escrowId.toString(), expires: String(g.expires), signature: g.signature });
-  const res = await call<Response>(`/evidence/${p.hash}?${q}`);
-  const blob = await res.blob();
-  const check = keccak256(new Uint8Array(await blob.arrayBuffer()));
-  if (check.toLowerCase() !== p.hash.toLowerCase()) throw new MediatorApiError("Evidence failed its integrity check: the file doesn't match its on-chain hash.");
-  return blob;
+  // The signed grant goes in the request body (as uploads do), never in the URL.
+  const res = await call<Response>(`/evidence/${p.hash}/read`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ escrowId: p.escrowId.toString(), expires: g.expires, signature: g.signature }),
+  });
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (keccak256(bytes).toLowerCase() !== p.hash.toLowerCase()) {
+    throw new MediatorApiError("Evidence failed its integrity check: the file doesn't match its on-chain hash.");
+  }
+  const served = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  const filename = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? `evidence-${p.hash.slice(2, 10)}`;
+  if (INLINE_TYPES.has(served)) return { blob: new Blob([bytes], { type: served }), inline: true, filename };
+  if (AS_PLAIN_TEXT.test(served)) return { blob: new Blob([bytes], { type: "text/plain;charset=utf-8" }), inline: true, filename };
+  return { blob: new Blob([bytes], { type: "application/octet-stream" }), inline: false, filename };
+}
+
+/** Opens safe types in a new tab, downloads everything else. */
+export function showEvidence(e: OpenedEvidence) {
+  const url = URL.createObjectURL(e.blob);
+  if (e.inline) {
+    window.open(url, "_blank", "noopener");
+  } else {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = e.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export interface ReasoningDoc {

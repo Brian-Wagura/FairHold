@@ -5,7 +5,7 @@ import { readGrantIsFresh, readMessage, uploadMessage } from "./auth.ts";
 import { hashBytes } from "./canonical.ts";
 import { escrowContract, readEscrow, Status, type PublicClient } from "./chain.ts";
 import type { Config } from "./config.ts";
-import { normalizeHash, type Store } from "./store.ts";
+import { findUpload, normalizeHash, type Store } from "./store.ts";
 import type { MediatorWorker } from "./worker.ts";
 
 const UploadBody = z.object({
@@ -17,7 +17,9 @@ const UploadBody = z.object({
   signature: z.string().refine((s) => isHex(s), "signature must be hex"),
 });
 
-const ReadQuery = z.object({
+// Read grants travel in a JSON body (like uploads), never in the URL, so they stay out of logs,
+// proxies and browser history.
+const ReadBody = z.object({
   escrowId: z.string().regex(/^\d+$/),
   expires: z.coerce.number().int(),
   signature: z.string().refine((s) => isHex(s), "signature must be hex"),
@@ -34,7 +36,13 @@ export interface ServerDeps {
 export function buildServer(d: ServerDeps): FastifyInstance {
   const { cfg, publicClient, store } = d;
   const app = Fastify({
-    logger: { level: process.env.LOG_LEVEL ?? "info" },
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      // Log method, path and request id only: query strings may carry sensitive values.
+      serializers: {
+        req: (req: { method: string; url: string; id: string }) => ({ method: req.method, url: req.url.split("?")[0], id: req.id }),
+      },
+    },
     bodyLimit: Math.ceil(cfg.MAX_EVIDENCE_BYTES * 1.4) + 4096, // base64 overhead
   });
 
@@ -118,6 +126,7 @@ export function buildServer(d: ServerDeps): FastifyInstance {
     if (bytes.byteLength > cfg.MAX_EVIDENCE_BYTES) throw httpError(413, `file exceeds ${cfg.MAX_EVIDENCE_BYTES} bytes`);
     const contentHash = hashBytes(bytes);
     const escrowId = BigInt(body.escrowId);
+    const escrowKey = escrowId.toString(); // canonical: "007" and "7" are the same escrow
     const message = uploadMessage({ chainId: cfg.CHAIN_ID, escrow: cfg.ESCROW_ADDRESS, escrowId, contentHash, kind: body.kind });
     const { escrow, party, role } = await recoverParty(escrowId, message, body.signature as Hex);
 
@@ -128,21 +137,23 @@ export function buildServer(d: ServerDeps): FastifyInstance {
       throw httpError(409, "evidence can only be added while the escrow is active or disputed");
     }
 
-    const meta = await store.putEvidence(bytes, { kind: body.kind, name: body.name, mimeType: body.mimeType }, { escrowId: body.escrowId, uploader: party });
+    const meta = await store.putEvidence(bytes, { kind: body.kind, name: body.name, mimeType: body.mimeType }, { escrowId: escrowKey, uploader: party });
     return reply.code(201).send({ contentHash: meta.contentHash, uri: `fairhold://evidence/${meta.contentHash}`, size: meta.size });
   });
 
-  app.get<{ Params: { hash: string } }>("/evidence/:hash", async (req, reply) => {
+  app.post<{ Params: { hash: string } }>("/evidence/:hash/read", async (req, reply) => {
     const hash = safeHash(req.params.hash);
-    const q = ReadQuery.parse(req.query);
+    const q = ReadBody.parse(req.body);
     if (!readGrantIsFresh(q.expires)) throw httpError(401, "access grant expired or too long-lived");
     const escrowId = BigInt(q.escrowId);
+    const escrowKey = escrowId.toString();
     await recoverParty(escrowId, readMessage({ chainId: cfg.CHAIN_ID, escrow: cfg.ESCROW_ADDRESS, escrowId, expires: q.expires }), q.signature as Hex);
     const found = await store.getVerifiedEvidence(hash).catch(() => undefined);
-    if (!found || !found.meta.uploads.some((u) => u.escrowId === q.escrowId)) throw httpError(404, "evidence not found for this escrow");
+    const upload = found && findUpload(found.meta, { escrowId: escrowKey });
+    if (!found || !upload) throw httpError(404, "evidence not found for this escrow");
     return reply
-      .header("content-type", found.meta.mimeType)
-      .header("content-disposition", `inline; filename="${found.meta.name.replace(/[^\w.-]/g, "_")}"`)
+      .header("content-type", upload.mimeType)
+      .header("content-disposition", `inline; filename="${upload.name.replace(/[^\w.-]/g, "_")}"`)
       .header("x-content-type-options", "nosniff")
       .header("cache-control", "private, no-store")
       .send(Buffer.from(found.bytes));
