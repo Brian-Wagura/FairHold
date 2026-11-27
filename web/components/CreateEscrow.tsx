@@ -1,15 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { formatUnits, isAddress, keccak256, parseEventLogs, toBytes, type Address, type Hash, type Hex, type TransactionReceipt } from "viem";
 import { mediatedEscrowAbi } from "@/lib/abi";
 import { chainTimeOffsetMs, checkTx, escrowContract, publicClient, tokenContract } from "@/lib/chain";
 import { config } from "@/lib/config";
 import { explainError, fmtAmount, fmtDuration, parseAmount, pct, short } from "@/lib/format";
 import { uploadEvidence } from "@/lib/mediator-api";
-import { IconLock, IconShield } from "./icons";
+import { IconCheck, IconLock, IconShield } from "./icons";
 import { useTx, type TxOutcome } from "./tx";
-import { Badge, Button, Card, Field, Notice, PageHeader, ProgressSteps, Skeleton, SplitBar, TxLink, cx, inputCls, type StepState } from "./ui";
+import { Badge, Button, Card, Field, Notice, PageHeader, ProgressSteps, Skeleton, SplitBar, TxLink, cx, goToSection, inputCls, type StepState } from "./ui";
 import { useWallet } from "./wallet";
 
 const UNITS = { minutes: 60, hours: 3600, days: 86400 } as const;
@@ -417,14 +417,22 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
     { label: "Share agreement with mediator", detail: "Sign to upload the private terms text", state: progress.share },
   ];
   const termsHash = keccak256(toBytes(terms));
+  const windowsOk = (["acceptWithin", "active", "evidence", "propose", "response"] as const).every((k) => !errors[k]);
+  const checklist = [
+    { label: "Payee and amount", href: "new-parties", ok: !errors.payee && !errors.amount, hint: errors.payee ? "Add payee" : "Check amount" },
+    { label: "Agreement", href: "new-parties", ok: !errors.terms, hint: "Describe the work" },
+    { label: "Mediator", href: "new-mediator", ok: !errors.mediator, hint: "Choose one" },
+    { label: "Deadlines", href: "new-deadlines", ok: windowsOk, hint: "Fix a window" },
+  ];
+  const readyCount = checklist.filter((c) => c.ok).length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-24 lg:pb-0">
       <PageHeader title="New escrow" description="Lock tUSD8 until the work is done. Nothing moves until you sign, and every outcome is decided by rules you set here." />
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-6">
-          <Card title={<SectionTitle n={1}>Start from a template</SectionTitle>} description="Templates fill in sensible deadlines and fallbacks. You can change everything.">
+          <Card id="new-template" title={<SectionTitle n={1}>Start from a template</SectionTitle>} description="Templates fill in sensible deadlines and fallbacks. You can change everything.">
             <fieldset>
               <legend className="sr-only">Template</legend>
               <div className="grid gap-3 sm:grid-cols-3">
@@ -437,7 +445,18 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
                     )}
                   >
                     <input type="radio" name="preset" className="sr-only" checked={i === preset} onChange={() => applyPreset(i)} />
-                    <span className="block text-sm font-semibold">{pr.name}</span>
+                    <span className="flex items-start justify-between gap-2">
+                      <span className="block text-sm font-semibold">{pr.name}</span>
+                      <span
+                        className={cx(
+                          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+                          i === preset ? "border-gray-900 bg-gray-900 text-white dark:border-gray-100 dark:bg-gray-100 dark:text-gray-900" : "border-gray-300 dark:border-gray-600",
+                        )}
+                        aria-hidden
+                      >
+                        {i === preset && <IconCheck size={12} />}
+                      </span>
+                    </span>
                     <span className="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">{pr.blurb}</span>
                   </label>
                 ))}
@@ -445,7 +464,7 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
             </fieldset>
           </Card>
 
-          <Card title={<SectionTitle n={2}>Who and how much</SectionTitle>}>
+          <Card id="new-parties" title={<SectionTitle n={2}>Who and how much</SectionTitle>} description="Who you're paying, how much, and what for.">
             <div className="grid gap-5 sm:grid-cols-2">
               <Field
                 label="Payee wallet address"
@@ -482,7 +501,7 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
             </div>
           </Card>
 
-          <Card title={<SectionTitle n={3}>Choose a mediator</SectionTitle>} description="The mediator can only recommend a split. It never holds funds, and either of you can reject its proposal.">
+          <Card id="new-mediator" title={<SectionTitle n={3}>Choose a mediator</SectionTitle>} description="The mediator can only recommend a split. It never holds funds, and either of you can reject its proposal.">
             {mediators === undefined ? (
               <div className="space-y-2" aria-busy="true" aria-label="Loading mediators">
                 <Skeleton className="h-16" />
@@ -565,23 +584,32 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
             )}
           </Card>
 
-          <Card title={<SectionTitle n={4}>Deadlines and fallbacks</SectionTitle>} description="These rules decide the outcome if someone stops responding, so nobody can hold the money hostage.">
-            <div className="grid gap-5 sm:grid-cols-2">
-              <WindowInput label="Payee must accept within" value={win.acceptWithin} onChange={(v) => setWin({ ...win, acceptWithin: v })} hint="Otherwise you can take a full refund." error={show("acceptWithin")} onBlur={() => touch("acceptWithin")} />
-              <WindowInput label="Dispute period after acceptance" value={win.active} onChange={(v) => setWin({ ...win, active: v })} hint="Disputes can be opened until this ends." error={show("active")} onBlur={() => touch("active")} />
-              <WindowInput label="Evidence window" value={win.evidence} onChange={(v) => setWin({ ...win, evidence: v })} hint="Time for both sides to add evidence once a dispute opens." error={show("evidence")} onBlur={() => touch("evidence")} />
-              <WindowInput label="Mediator must propose within" value={win.propose} onChange={(v) => setWin({ ...win, propose: v })} hint="If it doesn't, the fallback split applies." error={show("propose")} onBlur={() => touch("propose")} />
-              <WindowInput label="Time to respond to a proposal" value={win.response} onChange={(v) => setWin({ ...win, response: v })} hint="If nobody rejects, the proposal executes." error={show("response")} onBlur={() => touch("response")} />
+          <Card id="new-deadlines" title={<SectionTitle n={4}>Deadlines and fallbacks</SectionTitle>} description="These rules decide the outcome if someone stops responding, so nobody can hold the money hostage.">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Timeline</h3>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Each window is started by an event, shown under its name.</p>
+              <ol className="mt-4 divide-y divide-gray-100 rounded-xl border border-gray-100 dark:divide-gray-700 dark:border-gray-700">
+                <TimelineRow n={1} label="Payee accepts within" hint="Starts when you create the escrow. If the payee doesn't accept in time, you can take a full refund." value={win.acceptWithin} onChange={(v) => setWin({ ...win, acceptWithin: v })} error={show("acceptWithin")} onBlur={() => touch("acceptWithin")} />
+                <TimelineRow n={2} label="Dispute period" hint="Starts when the payee accepts. Until it ends, either side can open a dispute; if nobody does, the undisputed split pays out." value={win.active} onChange={(v) => setWin({ ...win, active: v })} error={show("active")} onBlur={() => touch("active")} />
+                <li className="bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:bg-gray-900/40 dark:text-gray-400">Only if a dispute is opened during the dispute period</li>
+                <TimelineRow n={3} label="Evidence window" hint="Starts when a dispute is opened. Both sides add evidence." value={win.evidence} onChange={(v) => setWin({ ...win, evidence: v })} error={show("evidence")} onBlur={() => touch("evidence")} />
+                <TimelineRow n={4} label="Mediator decides within" hint="Starts when the evidence window ends. If the mediator misses it, the fallback split applies." value={win.propose} onChange={(v) => setWin({ ...win, propose: v })} error={show("propose")} onBlur={() => touch("propose")} />
+                <TimelineRow n={5} label="Time to respond" hint="Starts when the mediator proposes. If nobody rejects in time, the proposal executes." value={win.response} onChange={(v) => setWin({ ...win, response: v })} error={show("response")} onBlur={() => touch("response")} />
+              </ol>
             </div>
-            <div className="mt-6 grid gap-6 border-t border-gray-100 dark:border-gray-700 pt-6 sm:grid-cols-2">
-              <SplitSlider label="If nobody disputes" value={undisputedBps} onChange={setUndisputed} />
-              <SplitSlider label="If mediation fails or is rejected" value={fallbackBps} onChange={setFallback} />
+            <div className="mt-8">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Automatic splits</h3>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">What each side receives when a deadline decides the outcome.</p>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <SplitControl title="If nobody disputes" description="Paid out when the dispute period ends." value={undisputedBps} onChange={setUndisputed} amount={amountUnits > 0n ? amountUnits : 0n} />
+                <SplitControl title="If mediation fails" description="Used if a proposal is rejected or the mediator misses its deadline." value={fallbackBps} onChange={setFallback} amount={amountUnits > 0n ? amountUnits : 0n} />
+              </div>
             </div>
           </Card>
         </div>
 
         <aside className="lg:sticky lg:top-24 lg:self-start" aria-label="Review">
-          <Card title="Review" tone="highlight">
+          <Card id="new-review" title="Review" tone="highlight">
             <div className="rounded-lg bg-gray-50 dark:bg-gray-900/50 p-4">
               <p className="text-xs font-medium text-gray-500 dark:text-gray-400">You lock</p>
               <p className="mt-0.5 text-3xl font-semibold tabular-nums tracking-tight">
@@ -595,8 +623,8 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
 
             <ol className="mt-5 space-y-3 border-l-2 border-gray-100 dark:border-gray-700 pl-4 text-sm" aria-label="Timeline">
               <TimelineItem title="Payee accepts" detail={`within ${fmtDuration(secs(win.acceptWithin))}`} />
-              <TimelineItem title="Work and dispute period" detail={fmtDuration(secs(win.active))} />
-              <TimelineItem title="If disputed" detail={`${fmtDuration(secs(win.evidence))} evidence → ${fmtDuration(secs(win.propose))} mediator → ${fmtDuration(secs(win.response))} to respond`} />
+              <TimelineItem title="Dispute period" detail={`${fmtDuration(secs(win.active))} from acceptance`} />
+              <TimelineItem title="If a dispute is opened" detail={`${fmtDuration(secs(win.evidence))} evidence from opening → ${fmtDuration(secs(win.propose))} for the mediator after evidence closes → ${fmtDuration(secs(win.response))} to respond from the proposal`} />
             </ol>
 
             <div className="mt-5 space-y-4 text-sm">
@@ -610,10 +638,35 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
               </div>
             </div>
 
-            <ul className="mt-5 space-y-1.5 text-xs text-gray-500 dark:text-gray-400">
-              <li className="flex gap-2"><IconShield size={14} className="mt-px shrink-0 text-gray-900 dark:text-white" /> Funds move only by agreement, both of you accepting a proposal, or a deadline passing.</li>
-              <li className="flex gap-2"><IconShield size={14} className="mt-px shrink-0 text-gray-900 dark:text-white" /> Anyone can trigger a deadline outcome, so no server has to stay online.</li>
-            </ul>
+            <div className="mt-5 border-t border-gray-100 pt-4 dark:border-gray-700">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                {readyCount === checklist.length ? "Ready to lock" : `${readyCount} of ${checklist.length} sections ready`}
+              </p>
+              <ul className="mt-2 space-y-1">
+                {checklist.map((c) => (
+                  <li key={c.label}>
+                    <a href={`#${c.href}`} onClick={(ev) => { ev.preventDefault(); goToSection(c.href); }} className="-mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40">
+                      <span
+                        className={cx(
+                          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+                          c.ok ? "border-gray-900 bg-gray-900 text-white dark:border-gray-100 dark:bg-gray-100 dark:text-gray-900" : attempted ? "border-red-500 text-red-600 dark:text-red-400" : "border-gray-300 dark:border-gray-600",
+                        )}
+                        aria-hidden
+                      >
+                        {c.ok ? <IconCheck size={12} /> : attempted ? "!" : null}
+                      </span>
+                      <span className={cx("flex-1", c.ok ? "text-gray-900 dark:text-white" : "text-gray-600 dark:text-gray-300")}>{c.label}</span>
+                      <span className="sr-only">{c.ok ? "complete" : "needs attention"}</span>
+                      {!c.ok && <span className="text-xs text-gray-500 dark:text-gray-400">{c.hint}</span>}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-3 flex gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <IconShield size={14} className="mt-px shrink-0 text-gray-900 dark:text-white" />
+                Funds move only by agreement, an accepted proposal, or a deadline anyone can trigger.
+              </p>
+            </div>
 
             <div className="mt-5 space-y-3">
               {attempted && (errorCount > 0 || blocking) && (
@@ -656,6 +709,19 @@ export function CreateEscrow({ onCreated }: { onCreated: (id: bigint) => void })
           </Card>
         </aside>
       </div>
+
+      {/* Phones: keep the amount and the next step in reach while scrolling the long form. */}
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-gray-100 bg-white/95 px-4 py-3 lg:hidden dark:border-gray-700 dark:bg-gray-900/95">
+        <div className="mx-auto flex max-w-page items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs text-gray-500 dark:text-gray-400">{readyCount === checklist.length ? "Ready to lock" : `${readyCount} of ${checklist.length} ready`}</p>
+            <p className="truncate text-base font-bold tabular-nums text-gray-900 dark:text-white">
+              {amountUnits > 0n ? fmtAmount(amountUnits) : "0.00"} <span className="text-xs font-medium text-gray-500 dark:text-gray-400">tUSD8</span>
+            </p>
+          </div>
+          <Button onClick={() => goToSection("new-review")}>Review &amp; lock</Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -688,46 +754,107 @@ function TimelineItem({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function SplitSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+const UNIT_SHORT: Record<Unit, string> = { minutes: "min", hours: "hr", days: "days" };
+
+/** One step of the deadline timeline: label and explanation, then a duration with unit pills. */
+function TimelineRow({ n, label, hint, value, onChange, error, onBlur }: { n: number; label: string; hint: string; value: Win; onChange: (w: Win) => void; error?: string; onBlur?: () => void }) {
+  const id = useId();
   return (
-    <Field label={<>{label}: payee gets <strong className="tabular-nums">{pct(value)}</strong></>}>
-      {(ctl) => (
-        <div>
-          <input
-            {...ctl}
-            type="range"
-            min={0}
-            max={10000}
-            step={500}
-            value={value}
-            onChange={(e) => onChange(Number(e.target.value))}
-            aria-valuetext={`Payee ${pct(value)}, payer ${pct(10000 - value)}`}
-            className="w-full"
-          />
-          <div className="mt-1 flex justify-between text-xs text-gray-500 dark:text-gray-400" aria-hidden>
-            <span>All to payer</span>
-            <span>50/50</span>
-            <span>All to payee</span>
-          </div>
+    <li className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 items-start gap-3">
+        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-semibold text-gray-700 dark:bg-gray-700 dark:text-gray-200" aria-hidden>{n}</span>
+        <div className="min-w-0">
+          <label htmlFor={id} className="text-sm font-medium text-gray-900 dark:text-white">{label}</label>
+          <p className="text-xs text-gray-500 dark:text-gray-400">{hint}</p>
+          {error && <p id={`${id}-err`} className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">{error}</p>}
         </div>
-      )}
-    </Field>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 pl-9 sm:pl-0">
+        <input
+          id={id}
+          type="number"
+          min={1}
+          inputMode="numeric"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-err` : undefined}
+          className={`${inputCls} w-20 text-center tabular-nums`}
+          value={Number.isFinite(value.n) ? value.n : ""}
+          onChange={(e) => onChange({ ...value, n: Math.max(0, Number(e.target.value)) })}
+          onBlur={onBlur}
+        />
+        <div role="group" aria-label={`${label}: unit`} className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5 dark:border-gray-600 dark:bg-gray-700">
+          {(Object.keys(UNITS) as Unit[]).map((u) => (
+            <button
+              key={u}
+              type="button"
+              aria-pressed={value.unit === u}
+              onClick={() => onChange({ ...value, unit: u })}
+              className={cx(
+                "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                value.unit === u ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900" : "text-gray-600 hover:text-gray-900 dark:text-gray-300 dark:hover:text-white",
+              )}
+            >
+              {UNIT_SHORT[u]}
+            </button>
+          ))}
+        </div>
+      </div>
+    </li>
   );
 }
 
-function WindowInput({ label, value, onChange, hint, error, onBlur }: { label: string; value: Win; onChange: (w: Win) => void; hint?: string; error?: string; onBlur?: () => void }) {
+const SPLIT_PRESETS = [0, 2500, 5000, 7500, 10000];
+
+/** Payee/payer split with the real amounts, a slider and quick presets. */
+function SplitControl({ title, description, value, onChange, amount }: { title: string; description: string; value: number; onChange: (v: number) => void; amount: bigint }) {
+  const id = useId();
+  const payee = (amount * BigInt(value)) / 10000n;
   return (
-    <Field label={label} hint={hint} error={error}>
-      {(ctl) => (
-        <div className="flex gap-2">
-          <input {...ctl} type="number" min={1} inputMode="numeric" className={`${inputCls} tabular-nums`} value={Number.isFinite(value.n) ? value.n : ""} onChange={(e) => onChange({ ...value, n: Math.max(0, Number(e.target.value)) })} onBlur={onBlur} />
-          <select className={`${inputCls} w-32 shrink-0`} aria-label={`${label}: unit`} value={value.unit} onChange={(e) => onChange({ ...value, unit: e.target.value as Unit })}>
-            {Object.keys(UNITS).map((u) => (
-              <option key={u}>{u}</option>
-            ))}
-          </select>
+    <div className="rounded-xl border border-gray-100 p-4 dark:border-gray-700">
+      <label htmlFor={id} className="text-sm font-semibold text-gray-900 dark:text-white">{title}</label>
+      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{description}</p>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/50">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Payee gets</p>
+          <p className="mt-0.5 text-lg font-bold tabular-nums text-gray-900 dark:text-white">{pct(value)}</p>
+          <p className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{fmtAmount(payee)} tUSD8</p>
         </div>
-      )}
-    </Field>
+        <div className="rounded-lg bg-gray-50 p-3 dark:bg-gray-900/50">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Payer gets back</p>
+          <p className="mt-0.5 text-lg font-bold tabular-nums text-gray-900 dark:text-white">{pct(10000 - value)}</p>
+          <p className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{fmtAmount(amount - payee)} tUSD8</p>
+        </div>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={0}
+        max={10000}
+        step={500}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        aria-valuetext={`Payee ${pct(value)}, payer ${pct(10000 - value)}`}
+        className="mt-4 h-2 w-full cursor-pointer appearance-none rounded-full bg-gray-200 dark:bg-gray-700 [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-white [&::-moz-range-thumb]:bg-gray-900 dark:[&::-moz-range-thumb]:border-gray-800 dark:[&::-moz-range-thumb]:bg-gray-100 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:bg-gray-900 [&::-webkit-slider-thumb]:shadow-sm dark:[&::-webkit-slider-thumb]:border-gray-800 dark:[&::-webkit-slider-thumb]:bg-gray-100"
+        style={{ backgroundImage: `linear-gradient(to right, var(--primary) ${value / 100}%, transparent ${value / 100}%)` }}
+      />
+      <div role="group" aria-label={`${title}: presets`} className="mt-3 flex flex-wrap gap-1.5">
+        {SPLIT_PRESETS.map((p) => (
+          <button
+            key={p}
+            type="button"
+            aria-pressed={value === p}
+            onClick={() => onChange(p)}
+            className={cx(
+              "rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors",
+              value === p
+                ? "border-gray-900 bg-gray-900 text-white dark:border-gray-100 dark:bg-gray-100 dark:text-gray-900"
+                : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-gray-600",
+            )}
+          >
+            {p === 0 ? "All to payer" : p === 10000 ? "All to payee" : pct(p)}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

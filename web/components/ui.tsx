@@ -112,7 +112,9 @@ export function Card({
   className,
   action,
   tone = "default",
+  id: sectionId,
 }: {
+  id?: string;
   title?: ReactNode;
   description?: ReactNode;
   children?: ReactNode;
@@ -123,13 +125,18 @@ export function Card({
   const id = useId();
   return (
     <section
-      aria-labelledby={title ? id : undefined}
-      className={cx(sectionClass, "flex flex-col gap-5 p-5 sm:p-6", tone === "highlight" && "border-gray-900 dark:border-gray-100", className)}
+      id={sectionId}
+      aria-labelledby={title ? (sectionId ? `${sectionId}-title` : id) : undefined}
+      className={cx(sectionClass, "flex scroll-mt-24 flex-col gap-5 p-5 sm:p-6", tone === "highlight" && "border-gray-900 dark:border-gray-100", className)}
     >
       {(title || action) && (
         <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
           <div className="min-w-0">
-            {title && <h2 id={id} className={sectionTitleClass}>{title}</h2>}
+            {title && (
+              <h2 id={sectionId ? `${sectionId}-title` : id} tabIndex={sectionId ? -1 : undefined} className={cx(sectionTitleClass, "outline-none")}>
+                {title}
+              </h2>
+            )}
             {description && <p className={cx(descriptionClass, "mt-1")}>{description}</p>}
           </div>
           {action}
@@ -138,6 +145,18 @@ export function Card({
       {children !== undefined && children !== null && <div className="min-w-0">{children}</div>}
     </section>
   );
+}
+
+/**
+ * Smoothly scrolls to a Card (by its `id`) and moves keyboard focus to its heading, so keyboard
+ * and screen-reader users land where sighted users do.
+ */
+export function goToSection(sectionId: string) {
+  const section = document.getElementById(sectionId);
+  if (!section) return;
+  section.scrollIntoView({ behavior: "smooth", block: "start" });
+  const target = document.getElementById(`${sectionId}-title`) ?? section;
+  target.focus({ preventScroll: true });
 }
 
 export function PageHeader({ title, description, actions, eyebrow }: { title: ReactNode; description?: ReactNode; actions?: ReactNode; eyebrow?: ReactNode }) {

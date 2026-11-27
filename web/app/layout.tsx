@@ -33,10 +33,14 @@ const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem("fairhold:theme
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" suppressHydrationWarning className={`${raleway.variable} ${geistMono.variable} h-full antialiased`}>
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
-      </head>
       <body suppressHydrationWarning className="flex min-h-full flex-col bg-background text-foreground">
+        {/* Synchronous before first paint (no theme flash). Per Next's "Preventing flash before
+            hydration" guide: text/plain on the client avoids React's dev warning about <script>. */}
+        <script
+          type={typeof window === "undefined" ? "text/javascript" : "text/plain"}
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }}
+        />
         {children}
       </body>
     </html>
