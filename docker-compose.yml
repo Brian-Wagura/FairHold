@@ -1,0 +1,33 @@
+# FairHold: mediator service + web UI against QDay Aevum testnet.
+#   cp mediator/.env.example mediator/.env   (fill ESCROW_ADDRESS, MEDIATOR_ADDRESS, SESSION_KEY_PRIVATE_KEY, ANTHROPIC_API_KEY)
+#   cp .env.example .env                     (fill the NEXT_PUBLIC_* build args)
+#   docker compose up --build
+services:
+  mediator:
+    build: ./mediator
+    env_file: ./mediator/.env
+    environment:
+      EVIDENCE_DIR: /data
+      CORS_ORIGINS: ${WEB_ORIGIN:-http://localhost:3000}
+    volumes:
+      - evidence:/data
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_ESCROW_ADDRESS: ${NEXT_PUBLIC_ESCROW_ADDRESS:?set NEXT_PUBLIC_ESCROW_ADDRESS in .env}
+        NEXT_PUBLIC_DEPLOY_BLOCK: ${NEXT_PUBLIC_DEPLOY_BLOCK:-0}
+        NEXT_PUBLIC_DEFAULT_MEDIATOR: ${NEXT_PUBLIC_DEFAULT_MEDIATOR:-}
+        NEXT_PUBLIC_MEDIATOR_URL: ${NEXT_PUBLIC_MEDIATOR_URL:-http://localhost:8787}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mediator
+    restart: unless-stopped
+
+volumes:
+  evidence:

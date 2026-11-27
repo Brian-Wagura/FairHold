@@ -1,0 +1,30 @@
+FROM node:24-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+# NEXT_PUBLIC_* are baked into the client bundle at build time.
+ARG NEXT_PUBLIC_CHAIN_ID=44005
+ARG NEXT_PUBLIC_RPC_URL=https://rpc-test.qday.info
+ARG NEXT_PUBLIC_EXPLORER_URL=https://explorer-test.qday.info
+ARG NEXT_PUBLIC_TOKEN_ADDRESS=0x456569838f1d43009A91ebA4263147Afd7233483
+ARG NEXT_PUBLIC_ESCROW_ADDRESS
+ARG NEXT_PUBLIC_DEPLOY_BLOCK=0
+ARG NEXT_PUBLIC_MEDIATOR_URL=http://localhost:8787
+ARG NEXT_PUBLIC_DEFAULT_MEDIATOR
+ENV NEXT_PUBLIC_CHAIN_ID=$NEXT_PUBLIC_CHAIN_ID NEXT_PUBLIC_RPC_URL=$NEXT_PUBLIC_RPC_URL \
+    NEXT_PUBLIC_EXPLORER_URL=$NEXT_PUBLIC_EXPLORER_URL NEXT_PUBLIC_TOKEN_ADDRESS=$NEXT_PUBLIC_TOKEN_ADDRESS \
+    NEXT_PUBLIC_ESCROW_ADDRESS=$NEXT_PUBLIC_ESCROW_ADDRESS NEXT_PUBLIC_DEPLOY_BLOCK=$NEXT_PUBLIC_DEPLOY_BLOCK \
+    NEXT_PUBLIC_MEDIATOR_URL=$NEXT_PUBLIC_MEDIATOR_URL NEXT_PUBLIC_DEFAULT_MEDIATOR=$NEXT_PUBLIC_DEFAULT_MEDIATOR
+RUN rm -f .env.local && npx next build
+
+FROM node:24-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app/package.json /app/package-lock.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/.next ./.next
+COPY --from=build /app/public ./public
+COPY --from=build /app/next.config.ts ./
+EXPOSE 3000
+CMD ["npx", "next", "start", "-p", "3000"]

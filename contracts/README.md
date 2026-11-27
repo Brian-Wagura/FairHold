@@ -1,66 +1,17 @@
-## Foundry
+# FairHold contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+`MediatedEscrow` (inherits `MediatorRegistry`) holds tUSD8 escrows and resolves them by mutual agreement, a bounded mediator proposal, or permissionless deadline fallbacks. See the [root README](../README.md) for the API and [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for invariants.
 
-Foundry consists of:
+Aevum runs **Shanghai** (no MCOPY/TSTORE), so `foundry.toml` pins `evm_version = "shanghai"` and transactions must be sent with `--legacy`. OpenZeppelin 5.7's EIP712 stack uses MCOPY, so the test token implements `permit` by hand.
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
-
-## Documentation
-
-https://book.getfoundry.sh/
-
-## Usage
-
-### Build
-
-```shell
-$ forge build
+```bash
+forge build
 ```
 
-### Test
-
-```shell
-$ forge test
+```bash
+forge test
 ```
 
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
+```bash
+forge script script/Deploy.s.sol --rpc-url https://rpc-test.qday.info --account aevum-deployer --broadcast --legacy
 ```
