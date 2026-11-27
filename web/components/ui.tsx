@@ -112,7 +112,9 @@ export function Card({
   className,
   action,
   tone = "default",
+  id: sectionId,
 }: {
+  id?: string;
   title?: ReactNode;
   description?: ReactNode;
   children?: ReactNode;
@@ -123,8 +125,9 @@ export function Card({
   const id = useId();
   return (
     <section
+      id={sectionId}
       aria-labelledby={title ? id : undefined}
-      className={cx(sectionClass, "flex flex-col gap-5 p-5 sm:p-6", tone === "highlight" && "border-gray-900 dark:border-gray-100", className)}
+      className={cx(sectionClass, "flex scroll-mt-24 flex-col gap-5 p-5 sm:p-6", tone === "highlight" && "border-gray-900 dark:border-gray-100", className)}
     >
       {(title || action) && (
         <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">

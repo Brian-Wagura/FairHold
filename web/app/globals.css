@@ -72,65 +72,65 @@
   :root {
     --radius: 0.5rem;
 
-    --background: var(--color-gray-50);
-    --foreground: var(--color-gray-900);
+    --background: #f9fafb;
+    --foreground: #111827;
     --card: #ffffff;
-    --card-foreground: var(--color-gray-900);
+    --card-foreground: #111827;
     --popover: #ffffff;
-    --popover-foreground: var(--color-gray-900);
-    --primary: var(--color-gray-900);
+    --popover-foreground: #111827;
+    --primary: #111827;
     --primary-foreground: #ffffff;
-    --secondary: var(--color-gray-100);
-    --secondary-foreground: var(--color-gray-900);
-    --muted: var(--color-gray-100);
-    --muted-foreground: var(--color-gray-500);
-    --accent: var(--color-gray-100);
-    --accent-foreground: var(--color-gray-900);
-    --destructive: var(--color-red-600);
+    --secondary: #f3f4f6;
+    --secondary-foreground: #111827;
+    --muted: #f3f4f6;
+    --muted-foreground: #6b7280;
+    --accent: #f3f4f6;
+    --accent-foreground: #111827;
+    --destructive: #dc2626;
     --destructive-foreground: #ffffff;
-    --border: var(--color-gray-200);
-    --input: var(--color-gray-300);
-    --ring: var(--color-gray-900);
+    --border: #e5e7eb;
+    --input: #d1d5db;
+    --ring: #111827;
 
-    --success: var(--color-green-600);
-    --warning: var(--color-amber-600);
-    --info: var(--color-blue-600);
-    --ai: var(--color-gray-700);
+    --success: #16a34a;
+    --warning: #d97706;
+    --info: #2563eb;
+    --ai: #374151;
 
     color-scheme: light;
   }
 
   .dark {
-    --background: var(--color-gray-900);
+    --background: #111827;
     --foreground: #ffffff;
-    --card: var(--color-gray-800);
+    --card: #1f2937;
     --card-foreground: #ffffff;
-    --popover: var(--color-gray-800);
+    --popover: #1f2937;
     --popover-foreground: #ffffff;
-    --primary: var(--color-gray-100);
-    --primary-foreground: var(--color-gray-900);
-    --secondary: var(--color-gray-700);
+    --primary: #f3f4f6;
+    --primary-foreground: #111827;
+    --secondary: #374151;
     --secondary-foreground: #ffffff;
-    --muted: var(--color-gray-700);
-    --muted-foreground: var(--color-gray-400);
-    --accent: var(--color-gray-700);
+    --muted: #374151;
+    --muted-foreground: #9ca3af;
+    --accent: #374151;
     --accent-foreground: #ffffff;
-    --destructive: var(--color-red-600);
+    --destructive: #dc2626;
     --destructive-foreground: #ffffff;
-    --border: var(--color-gray-700);
-    --input: var(--color-gray-600);
-    --ring: var(--color-gray-100);
+    --border: #374151;
+    --input: #4b5563;
+    --ring: #f3f4f6;
 
-    --success: var(--color-green-400);
-    --warning: var(--color-amber-400);
-    --info: var(--color-blue-400);
-    --ai: var(--color-gray-300);
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --info: #60a5fa;
+    --ai: #d1d5db;
 
     color-scheme: dark;
   }
 
   * {
-    border-color: var(--color-border);
+    border-color: var(--border);
   }
 
   html,
@@ -139,8 +139,8 @@
   }
 
   body {
-    background: var(--color-background);
-    color: var(--color-foreground);
+    background: var(--background);
+    color: var(--foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -151,24 +151,20 @@
   :where(a, button, summary, [tabindex]):focus-visible {
     outline: none;
     box-shadow:
-      0 0 0 2px var(--color-background),
-      0 0 0 4px var(--color-ring);
+      0 0 0 2px var(--background),
+      0 0 0 4px var(--ring);
     border-radius: var(--radius-lg);
   }
 
   ::selection {
-    background: var(--color-gray-900);
-    color: #ffffff;
-  }
-  .dark ::selection {
-    background: var(--color-gray-100);
-    color: var(--color-gray-900);
+    background: var(--primary);
+    color: var(--primary-foreground);
   }
 
   input[type="range"],
   input[type="checkbox"],
   input[type="radio"] {
-    accent-color: var(--color-primary);
+    accent-color: var(--primary);
   }
 
   dialog::backdrop {
